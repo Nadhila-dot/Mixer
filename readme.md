@@ -1,9 +1,9 @@
-# Mixer
+# Mixer — Enterprise Agentic Workspace on Vultr
 
-> A hosted AI agent that takes a business request, spins up a sandboxed workspace, writes real files, runs real commands, recovers from failures, and streams its progress back live.
+> Mixer is a Vultr-hosted AI workspace that turns enterprise tasks into visible, recoverable agent workflows. Unlike a normal chat UI, Mixer can plan multi-step work, create and edit files, run commands inside a workspace, recover from failed tool calls, and stream progress back to the user in real time.
 
 > [!NOTE]
-> Mixer was built for the **AI Agent Olympics 2026 Hackathon 2026 on lablab.ai** as a **Vultr submission**.
+> Built for the **Milan AI Week Hackathon**, Mixer demonstrates how **Vultr Serverless Inference** and **Vultr Compute** can power a practical enterprise AI agent for infrastructure, internal tooling, and operational automation.
 
 ![alt text](https://img.shields.io/badge/A%20nadhi.dev%20project-blue)
 
@@ -51,4 +51,3 @@ sequenceDiagram
 - [x] Skill system
 - [ ] Hooks system for external API calls
 - [ ] Connect to computers / other systems to control them (only ssh for now)
-
