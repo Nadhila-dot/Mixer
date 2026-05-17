@@ -4,23 +4,37 @@ set -euo pipefail
 # Mixer installer. Run as root on a Vultr / bare-metal Linux host.
 #
 # What it does, no source build, no toolchain required:
-#   1. Reads the published release manifest at GitHub Releases.
-#   2. Detects host CPU architecture (x86_64 or arm64) and downloads the
+#   1. Installs basic dependencies needed by this installer.
+#   2. Installs Docker Engine if missing.
+#   3. Reads the published release manifest at GitHub Releases.
+#   4. Detects host CPU architecture (x86_64 or arm64) and downloads the
 #      matching pre-built `forge` binary.
-#   3. Brings up SearXNG in Docker on a free local port.
-#   4. Writes /etc/mixer/.env (preserving keys you have already filled in).
-#   5. Installs a systemd unit so Mixer starts on boot and restarts on failure.
+#   5. Brings up SearXNG in Docker on a free local port.
+#   6. Writes /etc/mixer/.env, preserving keys you have already filled in.
+#   7. Installs a systemd unit so Mixer starts on boot and restarts on failure.
 #
-# Set VULTR_INFERENCE_API_KEY (and friends) before running, either as env
-# vars or by editing the defaults block below. The script will warn if it
-# is left empty.
+# Vultr startup-script notes:
+#   - This script is intentionally non-interactive.
+#   - Put your Vultr Serverless Inference API key in VULTR_INFERENCE_API_KEY below
+#     before using this as a startup script, or inject it as an environment variable.
+#   - SearXNG does NOT use an API key here. It runs locally in Docker and Mixer talks
+#     to it through SEARXNG_URL=http://127.0.0.1:<random-port>.
+#
+# Important values to change before pasting into a Vultr startup script:
+#   VULTR_INFERENCE_API_KEY="your-vultr-serverless-inference-api-key"
+#   VULTR_DEFAULT_MODEL="your-vultr-model-name"
+#
+# Optional values:
+#   APP_PORT="4590"
+#   AI_PROVIDER="vultr"
+#   VULTR_INFERENCE_BASE_URL="https://api.vultrinference.com/v1"
 
 # User-tweakable defaults. Written to /etc/mixer/.env if not already present.
-APP_PORT="${APP_PORT:-3000}"
+APP_PORT="${APP_PORT:-4590}"
+AI_PROVIDER="${AI_PROVIDER:-vultr}"
 VULTR_INFERENCE_API_KEY="${VULTR_INFERENCE_API_KEY:-}"
 VULTR_INFERENCE_BASE_URL="${VULTR_INFERENCE_BASE_URL:-https://api.vultrinference.com/v1}"
 VULTR_DEFAULT_MODEL="${VULTR_DEFAULT_MODEL:-}"
-AI_PROVIDER="${AI_PROVIDER:-vultr}"
 
 # Release manifest. Defaults to "latest". Override MIXER_RELEASE_JSON_URL to
 # pin a tag, e.g.
@@ -36,7 +50,9 @@ SERVICE_NAME="mixer"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 INSTALL_BIN="/usr/local/bin/forge"
 
-echo "==> Mixer installer: download release binary, install systemd service, set up SearXNG"
+export DEBIAN_FRONTEND=noninteractive
+
+echo "==> Mixer installer: install Docker, download release binary, set up SearXNG, install systemd service"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "ERROR: run this with sudo: sudo bash install-dep.sh"
@@ -44,6 +60,11 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+apt_install_quiet() {
+  apt-get update -qq
+  apt-get install -y -qq "$@"
+}
 
 find_free_port() {
   python3 - <<'PY'
@@ -91,7 +112,6 @@ ensure_env_var() {
   fi
 }
 
-# Reads a dot-path field from release.json (stdin) via python3.
 json_get() {
   python3 -c "
 import json,sys
@@ -102,24 +122,100 @@ print(data)
 " "$1"
 }
 
-# Make sure the basic tooling is on the box before we go any further.
-if ! command_exists curl; then
-  echo "==> Installing curl"
-  apt-get update -qq && apt-get install -y -qq curl
-fi
+install_basic_dependencies() {
+  if command_exists apt-get; then
+    echo "==> Installing basic dependencies"
+    apt_install_quiet ca-certificates curl gnupg python3 openssl lsb-release
+  elif command_exists dnf; then
+    echo "==> Installing basic dependencies"
+    dnf install -y ca-certificates curl gnupg2 python3 openssl
+  else
+    echo "ERROR: unsupported distro. This installer supports apt or dnf based Linux systems."
+    exit 1
+  fi
+}
 
-if ! command_exists python3; then
-  echo "==> Installing python3 (needed to parse release.json)"
-  apt-get update -qq && apt-get install -y -qq python3
-fi
+install_docker() {
+  echo "==> Docker is not installed. Installing Docker Engine + Compose plugin"
+
+  if command_exists apt-get; then
+    apt_install_quiet ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings
+
+    if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+    fi
+
+    . /etc/os-release
+    DOCKER_DISTRO="ubuntu"
+    DOCKER_CODENAME="${VERSION_CODENAME:-}"
+
+    # Debian hosts need Docker's Debian repo instead of Ubuntu's.
+    if [[ "${ID:-}" == "debian" ]]; then
+      DOCKER_DISTRO="debian"
+    fi
+
+    if [[ -z "$DOCKER_CODENAME" ]]; then
+      DOCKER_CODENAME="$(lsb_release -cs 2>/dev/null || true)"
+    fi
+
+    if [[ -z "$DOCKER_CODENAME" ]]; then
+      echo "ERROR: could not detect distro codename for Docker apt repo."
+      exit 1
+    fi
+
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_DISTRO} ${DOCKER_CODENAME} stable" \
+      > /etc/apt/sources.list.d/docker.list
+
+    apt-get update -qq
+    apt-get install -y -qq \
+      docker-ce \
+      docker-ce-cli \
+      containerd.io \
+      docker-buildx-plugin \
+      docker-compose-plugin
+
+  elif command_exists dnf; then
+    dnf install -y dnf-plugins-core
+    dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    dnf install -y \
+      docker-ce \
+      docker-ce-cli \
+      containerd.io \
+      docker-buildx-plugin \
+      docker-compose-plugin
+  else
+    echo "ERROR: unsupported distro. This installer can auto-install Docker on apt/dnf systems only."
+    exit 1
+  fi
+
+  systemctl enable --now docker
+}
+
+make_secret_key() {
+  openssl rand -hex 32 2>/dev/null || python3 - <<'PY'
+import secrets
+print(secrets.token_hex(32))
+PY
+}
+
+install_basic_dependencies
 
 if ! command_exists docker; then
-  echo "ERROR: Docker is not installed. Install Docker first, then rerun this script."
-  exit 1
+  install_docker
+fi
+
+if ! systemctl is-active --quiet docker; then
+  echo "==> Starting Docker daemon"
+  systemctl enable --now docker
 fi
 
 if ! docker info >/dev/null 2>&1; then
-  echo "ERROR: Docker daemon is not running."
+  echo "ERROR: Docker daemon is installed but not responding."
+  journalctl -u docker --no-pager -n 80 || true
   exit 1
 fi
 
@@ -160,12 +256,14 @@ mkdir -p "$SEARXNG_DIR"
 
 SEARXNG_PORT="$(find_free_port)"
 SEARXNG_URL="http://127.0.0.1:${SEARXNG_PORT}"
+SEARXNG_SECRET_KEY="$(make_secret_key)"
 echo "==> SearXNG will bind to ${SEARXNG_URL}"
 
-cat > "$SEARXNG_DIR/settings.yml" <<'EOF'
+cat > "$SEARXNG_DIR/settings.yml" <<EOF2
 use_default_settings: true
 
 server:
+  secret_key: "${SEARXNG_SECRET_KEY}"
   limiter: false
   image_proxy: true
 
@@ -179,9 +277,9 @@ ui:
 formats:
   - html
   - json
-EOF
+EOF2
 
-cat > "$SEARXNG_DIR/docker-compose.yml" <<EOF
+cat > "$SEARXNG_DIR/docker-compose.yml" <<EOF2
 services:
   searxng:
     image: searxng/searxng:latest
@@ -190,8 +288,8 @@ services:
     ports:
       - "127.0.0.1:${SEARXNG_PORT}:8080"
     volumes:
-      - ${SEARXNG_DIR}/settings.yml:/etc/searxng/settings.yml:ro
-EOF
+      - ${SEARXNG_DIR}/settings.yml:/etc/searxng/settings.yml
+EOF2
 
 echo "==> Stopping any existing SearXNG container"
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -207,14 +305,14 @@ else
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
     -p "127.0.0.1:${SEARXNG_PORT}:8080" \
-    -v "$SEARXNG_DIR/settings.yml:/etc/searxng/settings.yml:ro" \
+    -v "$SEARXNG_DIR/settings.yml:/etc/searxng/settings.yml" \
     searxng/searxng:latest >/dev/null
 fi
 
 echo "==> Waiting for SearXNG"
 READY=0
-for _ in {1..30}; do
-  if curl -fsS "${SEARXNG_URL}/search?q=test&format=json" >/dev/null 2>&1; then
+for _ in {1..60}; do
+  if curl -fsS "${SEARXNG_URL}/" >/dev/null 2>&1; then
     READY=1
     break
   fi
@@ -224,8 +322,13 @@ done
 if [[ "$READY" != "1" ]]; then
   echo "ERROR: SearXNG did not become ready."
   echo "Container logs:"
-  docker logs "$CONTAINER_NAME" --tail=100 || true
+  docker logs "$CONTAINER_NAME" --tail=120 || true
   exit 1
+fi
+
+# Confirm JSON output is enabled, but do not fail the whole install just because an engine is slow.
+if ! curl -fsS "${SEARXNG_URL}/search?q=test&format=json" >/dev/null 2>&1; then
+  echo "WARNING: SearXNG homepage is up, but JSON search test failed. Mixer may still work after SearXNG finishes warming up."
 fi
 
 # Download the Mixer binary, verify it is an ELF, install to /usr/local/bin.
@@ -265,12 +368,13 @@ ensure_env_var "BRAVE_SEARCH_API_KEY" ""
 ensure_env_var "GOOGLE_SEARCH_API_KEY" ""
 ensure_env_var "GOOGLE_SEARCH_ENGINE_ID" ""
 
+# SearXNG is a local Docker service. It does not need an API key.
 # Always refresh SEARXNG_URL because install just picked a fresh free port.
 set_env_var "SEARXNG_URL" "$SEARXNG_URL"
 
 # systemd unit.
 echo "==> Creating systemd service ${SERVICE_FILE}"
-cat > "$SERVICE_FILE" <<EOF
+cat > "$SERVICE_FILE" <<EOF2
 [Unit]
 Description=Mixer agent server
 After=network-online.target docker.service
@@ -286,11 +390,14 @@ RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF2
 
 echo "==> Enabling and starting ${SERVICE_NAME}"
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
+# open that port and etc
+# so traffic can actually flow :(
+sudo iptables -I INPUT -p tcp --dport ${APP_PORT} -j ACCEPT && sudo iptables-save | sudo tee /etc/iptables.rules >/dev/null
 
 PUBLIC_IPV4="$(get_public_ipv4 || true)"
 
@@ -311,6 +418,6 @@ fi
 echo ""
 if [[ -z "$VULTR_INFERENCE_API_KEY" ]]; then
   echo "Reminder: VULTR_INFERENCE_API_KEY is empty in ${ENV_FILE}."
-  echo "Set it (and any other keys) then restart:"
+  echo "Set it before expecting Vultr inference to work, then restart:"
   echo "  sudo systemctl restart ${SERVICE_NAME}"
 fi

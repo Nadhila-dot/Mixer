@@ -47,9 +47,14 @@ pub async fn disk_file(url_path: &str, range: Option<&str>) -> Response {
         format!("frontend/dist/{rel}"),
     ];
 
+    // Try disk first so dev-mode edits to frontend/public/* are picked up live.
+    // In production the binary runs from /etc/mixer and none of those paths exist,
+    // so we fall back to the rust_embed bundle (Vite copies frontend/public/* into
+    // frontend/dist/* at build, which is what rust_embed packages).
     let data = candidates
         .iter()
         .find_map(|p| std::fs::read(p).ok())
+        .or_else(|| assets::get(url_path).map(|f| f.data.to_vec()))
         .unwrap_or_default();
 
     if data.is_empty() {
