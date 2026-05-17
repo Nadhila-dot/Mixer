@@ -1,180 +1,53 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-################################################################################
-# Mixer Vultr Startup Script
+# Mixer installer. Run as root on a Vultr / bare-metal Linux host.
 #
-# Paste this into a Vultr startup script, or run it manually with:
-#   sudo bash install.sh
+# What it does, no source build, no toolchain required:
+#   1. Reads the published release manifest at GitHub Releases.
+#   2. Detects host CPU architecture (x86_64 or arm64) and downloads the
+#      matching pre-built `forge` binary.
+#   3. Brings up SearXNG in Docker on a free local port.
+#   4. Writes /etc/mixer/.env (preserving keys you have already filled in).
+#   5. Installs a systemd unit so Mixer starts on boot and restarts on failure.
 #
-# IMPORTANT:
-#   This script is NON-INTERACTIVE.
-#   You MUST edit the variables below before using it.
-#
-# REQUIRED CHANGES BEFORE RUNNING:
-#
-#   1. VULTR_INFERENCE_API_KEY
-#      Put your Vultr Serverless Inference API key here.
-#
-#   2. VULTR_DEFAULT_MODEL
-#      Put the model name you want Mixer to use by default.
-#
-#   3. REPO_URL
-#      Put your public GitHub repo URL here.
-#
-# OPTIONAL CHANGES:
-#
-#   APP_PORT
-#      Port Mixer will run on. Default: 3000
-#
-#   INSTALL_BRANCH
-#      Git branch to deploy. Default: main
-#
-#   SERVICE_NAME
-#      systemd service name. Default: mixer
-#
-#   INSTALL_BIN
-#      Where the built binary is installed. Default: /usr/local/bin/forge
-#
-# NOTES:
-#   - Docker must be available or this script will install it.
-#   - SearXNG runs locally in Docker on a random free localhost port.
-#   - The selected SearXNG URL is written to /etc/mixer/.env.
-#   - The app env file lives at /etc/mixer/.env.
-#   - This script assumes the Rust binary is named "forge".
-################################################################################
+# Set VULTR_INFERENCE_API_KEY (and friends) before running, either as env
+# vars or by editing the defaults block below. The script will warn if it
+# is left empty.
 
-################################################################################
-# EDIT THESE VALUES
-################################################################################
+# User-tweakable defaults. Written to /etc/mixer/.env if not already present.
+APP_PORT="${APP_PORT:-3000}"
+VULTR_INFERENCE_API_KEY="${VULTR_INFERENCE_API_KEY:-}"
+VULTR_INFERENCE_BASE_URL="${VULTR_INFERENCE_BASE_URL:-https://api.vultrinference.com/v1}"
+VULTR_DEFAULT_MODEL="${VULTR_DEFAULT_MODEL:-}"
+AI_PROVIDER="${AI_PROVIDER:-vultr}"
 
-REPO_URL="https://github.com/Nadhila-dot/Mixer.git"
-INSTALL_BRANCH="main"
+# Release manifest. Defaults to "latest". Override MIXER_RELEASE_JSON_URL to
+# pin a tag, e.g.
+#   MIXER_RELEASE_JSON_URL=https://github.com/Nadhila-dot/Mixer/releases/download/v0.2/release.json
+MIXER_RELEASE_JSON_URL="${MIXER_RELEASE_JSON_URL:-https://github.com/Nadhila-dot/Mixer/releases/latest/download/release.json}"
 
-AI_PROVIDER="vultr"
-VULTR_INFERENCE_API_KEY="PASTE_YOUR_VULTR_SERVERLESS_INFERENCE_API_KEY_HERE"
-VULTR_INFERENCE_BASE_URL="https://api.vultrinference.com/v1"
-VULTR_DEFAULT_MODEL="PASTE_YOUR_VULTR_MODEL_NAME_HERE"
-
-APP_PORT="3000"
-
-################################################################################
-# ADVANCED SETTINGS usually do not need changing
-################################################################################
-
+# Fixed install paths.
 MIXER_DIR="/etc/mixer"
-APP_DIR="$MIXER_DIR/app"
 SEARXNG_DIR="$MIXER_DIR/searxng"
 ENV_FILE="$MIXER_DIR/.env"
-
 CONTAINER_NAME="mixer-searxng"
-
 SERVICE_NAME="mixer"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-
 INSTALL_BIN="/usr/local/bin/forge"
-ROOT_HOME="/root"
 
-################################################################################
-# INTERNALS
-################################################################################
-
-echo ""
-echo "============================================================"
-echo " Mixer Vultr startup installer"
-echo "============================================================"
-echo ""
+echo "==> Mixer installer: download release binary, install systemd service, set up SearXNG"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "ERROR: this script must run as root."
-  echo "Use sudo or run it as a Vultr startup script."
+  echo "ERROR: run this with sudo: sudo bash install-dep.sh"
   exit 1
 fi
 
-if [[ -z "$REPO_URL" || "$REPO_URL" == "https://github.com/YOUR_USERNAME/YOUR_REPO.git" ]]; then
-  echo "ERROR: REPO_URL is not configured."
-  echo "Edit REPO_URL at the top of this script."
-  exit 1
-fi
-
-if [[ -z "$VULTR_INFERENCE_API_KEY" || "$VULTR_INFERENCE_API_KEY" == "PASTE_YOUR_VULTR_SERVERLESS_INFERENCE_API_KEY_HERE" ]]; then
-  echo "ERROR: VULTR_INFERENCE_API_KEY is not configured."
-  echo "Edit VULTR_INFERENCE_API_KEY at the top of this script."
-  exit 1
-fi
-
-if [[ -z "$VULTR_DEFAULT_MODEL" || "$VULTR_DEFAULT_MODEL" == "PASTE_YOUR_VULTR_MODEL_NAME_HERE" ]]; then
-  echo "ERROR: VULTR_DEFAULT_MODEL is not configured."
-  echo "Edit VULTR_DEFAULT_MODEL at the top of this script."
-  exit 1
-fi
-
-command_exists() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-install_base_packages() {
-  echo "==> Installing base packages"
-
-  export DEBIAN_FRONTEND=noninteractive
-
-  apt-get update
-  apt-get install -y \
-    ca-certificates \
-    curl \
-    git \
-    python3 \
-    build-essential \
-    pkg-config \
-    libssl-dev
-}
-
-install_docker() {
-  if command_exists docker; then
-    echo "==> Docker already installed"
-    return 0
-  fi
-
-  echo "==> Installing Docker"
-  curl -fsSL https://get.docker.com | sh
-
-  systemctl enable docker
-  systemctl start docker
-}
-
-install_rust_toolchain() {
-  if command_exists cargo && command_exists rustc; then
-    echo "==> Rust already installed"
-    return 0
-  fi
-
-  echo "==> Installing Rust toolchain"
-  curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
-
-  export PATH="${ROOT_HOME}/.cargo/bin:${PATH}"
-
-  if [[ -f "${ROOT_HOME}/.cargo/env" ]]; then
-    # shellcheck disable=SC1091
-    source "${ROOT_HOME}/.cargo/env"
-  fi
-}
-
-install_bun() {
-  if command_exists bun; then
-    echo "==> Bun already installed"
-    return 0
-  fi
-
-  echo "==> Installing Bun"
-  curl -fsSL https://bun.sh/install | bash
-
-  export PATH="${ROOT_HOME}/.bun/bin:${ROOT_HOME}/.cargo/bin:${PATH}"
-}
+command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 find_free_port() {
   python3 - <<'PY'
 import socket
-
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
     s.bind(("127.0.0.1", 0))
     print(s.getsockname()[1])
@@ -183,7 +56,6 @@ PY
 
 get_public_ipv4() {
   local ip=""
-
   for url in \
     https://api.ipify.org \
     https://ifconfig.io/ip \
@@ -191,29 +63,19 @@ get_public_ipv4() {
     https://ipinfo.io/ip
   do
     ip="$(curl -4 -fsS "$url" 2>/dev/null | tr -d '[:space:]' || true)"
-
     if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       echo "$ip"
       return 0
     fi
   done
-
   ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
-
-  if [[ -n "$ip" ]]; then
-    echo "$ip"
-    return 0
-  fi
-
+  [[ -n "$ip" ]] && { echo "$ip"; return 0; }
   return 1
 }
 
 set_env_var() {
-  local key="$1"
-  local value="$2"
-
+  local key="$1" value="$2"
   touch "$ENV_FILE"
-
   if grep -q "^${key}=" "$ENV_FILE"; then
     sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
   else
@@ -221,50 +83,84 @@ set_env_var() {
   fi
 }
 
-ensure_env_var_exists() {
-  local key="$1"
-  local default_value="${2:-}"
-
+ensure_env_var() {
+  local key="$1" default_value="${2:-}"
   touch "$ENV_FILE"
-
   if ! grep -q "^${key}=" "$ENV_FILE"; then
     echo "${key}=${default_value}" >> "$ENV_FILE"
   fi
 }
 
-echo "==> Preparing system"
-install_base_packages
-install_docker
-install_rust_toolchain
-install_bun
+# Reads a dot-path field from release.json (stdin) via python3.
+json_get() {
+  python3 -c "
+import json,sys
+data = json.load(sys.stdin)
+for key in sys.argv[1].split('.'):
+    data = data[key]
+print(data)
+" "$1"
+}
 
-export PATH="${ROOT_HOME}/.bun/bin:${ROOT_HOME}/.cargo/bin:${PATH}"
+# Make sure the basic tooling is on the box before we go any further.
+if ! command_exists curl; then
+  echo "==> Installing curl"
+  apt-get update -qq && apt-get install -y -qq curl
+fi
+
+if ! command_exists python3; then
+  echo "==> Installing python3 (needed to parse release.json)"
+  apt-get update -qq && apt-get install -y -qq python3
+fi
+
+if ! command_exists docker; then
+  echo "ERROR: Docker is not installed. Install Docker first, then rerun this script."
+  exit 1
+fi
 
 if ! docker info >/dev/null 2>&1; then
   echo "ERROR: Docker daemon is not running."
   exit 1
 fi
 
-echo "==> Creating Mixer directories"
-mkdir -p "$MIXER_DIR"
+# Detect arch and pick the matching binary key in release.json.
+RAW_ARCH="$(uname -m)"
+case "$RAW_ARCH" in
+  x86_64|amd64)   ARCH_KEY="linux_x86_64" ;;
+  aarch64|arm64)  ARCH_KEY="linux_arm64"  ;;
+  *)
+    echo "ERROR: unsupported CPU architecture: ${RAW_ARCH}"
+    echo "Mixer publishes binaries for x86_64 and arm64 only."
+    exit 1
+    ;;
+esac
+
+echo "==> Detected architecture: ${RAW_ARCH} (using ${ARCH_KEY} build)"
+echo "==> Fetching release manifest: ${MIXER_RELEASE_JSON_URL}"
+
+RELEASE_JSON="$(curl -fsSL "$MIXER_RELEASE_JSON_URL")" || {
+  echo "ERROR: could not download release manifest from ${MIXER_RELEASE_JSON_URL}"
+  exit 1
+}
+
+BINARY_URL="$(echo "$RELEASE_JSON" | json_get "downloads.${ARCH_KEY}.url")" || {
+  echo "ERROR: release.json does not contain downloads.${ARCH_KEY}.url"
+  echo "Manifest contents:"
+  echo "$RELEASE_JSON"
+  exit 1
+}
+
+RELEASE_TAG="$(echo "$RELEASE_JSON" | json_get "tag" 2>/dev/null || echo "unknown")"
+echo "==> Mixer release: ${RELEASE_TAG}"
+echo "==> Binary URL:    ${BINARY_URL}"
+
+# /etc/mixer layout and the SearXNG sidecar.
+echo "==> Creating ${MIXER_DIR} layout"
 mkdir -p "$SEARXNG_DIR"
-
-echo "==> Cloning/updating Mixer repo"
-
-if [[ -d "$APP_DIR/.git" ]]; then
-  cd "$APP_DIR"
-  git fetch origin "$INSTALL_BRANCH"
-  git reset --hard "origin/${INSTALL_BRANCH}"
-else
-  rm -rf "$APP_DIR"
-  git clone --branch "$INSTALL_BRANCH" "$REPO_URL" "$APP_DIR"
-  cd "$APP_DIR"
-fi
 
 SEARXNG_PORT="$(find_free_port)"
 SEARXNG_URL="http://127.0.0.1:${SEARXNG_PORT}"
-
-echo "==> Selected SearXNG port: ${SEARXNG_PORT}"
+echo "==> SearXNG will bind to ${SEARXNG_URL}"
 
 cat > "$SEARXNG_DIR/settings.yml" <<'EOF'
 use_default_settings: true
@@ -297,12 +193,11 @@ services:
       - ${SEARXNG_DIR}/settings.yml:/etc/searxng/settings.yml:ro
 EOF
 
-echo "==> Stopping old SearXNG container if present"
+echo "==> Stopping any existing SearXNG container"
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 echo "==> Starting SearXNG"
 cd "$SEARXNG_DIR"
-
 if docker compose version >/dev/null 2>&1; then
   docker compose up -d
 elif command_exists docker-compose; then
@@ -317,81 +212,75 @@ else
 fi
 
 echo "==> Waiting for SearXNG"
-
 READY=0
-
-for i in {1..30}; do
+for _ in {1..30}; do
   if curl -fsS "${SEARXNG_URL}/search?q=test&format=json" >/dev/null 2>&1; then
     READY=1
     break
   fi
-
   sleep 1
 done
 
 if [[ "$READY" != "1" ]]; then
   echo "ERROR: SearXNG did not become ready."
-  echo ""
   echo "Container logs:"
   docker logs "$CONTAINER_NAME" --tail=100 || true
   exit 1
 fi
 
-echo "==> Writing environment file: $ENV_FILE"
+# Download the Mixer binary, verify it is an ELF, install to /usr/local/bin.
+echo "==> Downloading Mixer binary"
+TMP_BIN="$(mktemp)"
+trap 'rm -f "$TMP_BIN"' EXIT
 
-touch "$ENV_FILE"
-chmod 600 "$ENV_FILE"
+curl -fsSL -o "$TMP_BIN" "$BINARY_URL" || {
+  echo "ERROR: failed to download binary from ${BINARY_URL}"
+  exit 1
+}
 
-set_env_var "AI_PROVIDER" "$AI_PROVIDER"
-set_env_var "VULTR_INFERENCE_API_KEY" "$VULTR_INFERENCE_API_KEY"
-set_env_var "VULTR_INFERENCE_BASE_URL" "$VULTR_INFERENCE_BASE_URL"
-set_env_var "VULTR_DEFAULT_MODEL" "$VULTR_DEFAULT_MODEL"
-set_env_var "PORT" "$APP_PORT"
-set_env_var "SEARXNG_URL" "$SEARXNG_URL"
-
-ensure_env_var_exists "BRAVE_SEARCH_API_KEY" ""
-ensure_env_var_exists "GOOGLE_SEARCH_API_KEY" ""
-ensure_env_var_exists "GOOGLE_SEARCH_ENGINE_ID" ""
-
-echo "==> Linking app .env to /etc/mixer/.env"
-
-if [[ -e "$APP_DIR/.env" && ! -L "$APP_DIR/.env" ]]; then
-  cp "$APP_DIR/.env" "$APP_DIR/.env.backup.$(date +%s)"
-  rm -f "$APP_DIR/.env"
-fi
-
-ln -sfn "$ENV_FILE" "$APP_DIR/.env"
-
-echo "==> Building Mixer release binary"
-cd "$APP_DIR"
-
-bun install --frozen-lockfile
-cargo build --locked --release
-
-if [[ ! -f "$APP_DIR/target/release/forge" ]]; then
-  echo "ERROR: release binary not found:"
-  echo "  $APP_DIR/target/release/forge"
-  echo ""
-  echo "Check that your Cargo package builds a binary named 'forge'."
+# Magic-byte sanity check so we do not install an HTML error page as a binary.
+if ! head -c 4 "$TMP_BIN" | grep -q $'\x7fELF'; then
+  echo "ERROR: downloaded file at ${BINARY_URL} is not an ELF binary."
+  echo "First bytes:"
+  head -c 200 "$TMP_BIN" | cat -v
   exit 1
 fi
 
-echo "==> Installing binary to $INSTALL_BIN"
-install -m 755 "$APP_DIR/target/release/forge" "$INSTALL_BIN"
+echo "==> Installing binary to ${INSTALL_BIN}"
+install -m 755 "$TMP_BIN" "$INSTALL_BIN"
+rm -f "$TMP_BIN"
+trap - EXIT
 
-echo "==> Creating systemd service: $SERVICE_FILE"
+# Write /etc/mixer/.env, preserving any keys the operator already set.
+echo "==> Writing ${ENV_FILE}"
+touch "$ENV_FILE"
+chmod 600 "$ENV_FILE"
 
+ensure_env_var "AI_PROVIDER" "$AI_PROVIDER"
+ensure_env_var "VULTR_INFERENCE_API_KEY" "$VULTR_INFERENCE_API_KEY"
+ensure_env_var "VULTR_INFERENCE_BASE_URL" "$VULTR_INFERENCE_BASE_URL"
+ensure_env_var "VULTR_DEFAULT_MODEL" "$VULTR_DEFAULT_MODEL"
+ensure_env_var "PORT" "$APP_PORT"
+ensure_env_var "BRAVE_SEARCH_API_KEY" ""
+ensure_env_var "GOOGLE_SEARCH_API_KEY" ""
+ensure_env_var "GOOGLE_SEARCH_ENGINE_ID" ""
+
+# Always refresh SEARXNG_URL because install just picked a fresh free port.
+set_env_var "SEARXNG_URL" "$SEARXNG_URL"
+
+# systemd unit.
+echo "==> Creating systemd service ${SERVICE_FILE}"
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
-Description=Mixer application service
+Description=Mixer agent server
 After=network-online.target docker.service
 Wants=network-online.target docker.service
 
 [Service]
 Type=simple
-WorkingDirectory=$APP_DIR
-EnvironmentFile=$ENV_FILE
-ExecStart=$INSTALL_BIN
+WorkingDirectory=${MIXER_DIR}
+EnvironmentFile=${ENV_FILE}
+ExecStart=${INSTALL_BIN}
 Restart=always
 RestartSec=3
 
@@ -399,39 +288,29 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-echo "==> Enabling and starting Mixer service"
-
+echo "==> Enabling and starting ${SERVICE_NAME}"
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
 PUBLIC_IPV4="$(get_public_ipv4 || true)"
 
 echo ""
-echo "============================================================"
-echo " Mixer install complete"
-echo "============================================================"
+echo "Done."
 echo ""
-echo "App directory:"
-echo "  $APP_DIR"
-echo ""
-echo "Environment file:"
-echo "  $ENV_FILE"
-echo ""
-echo "SearXNG:"
-echo "  $SEARXNG_URL"
-echo ""
-echo "Systemd:"
-echo "  systemctl status $SERVICE_NAME"
-echo "  journalctl -u $SERVICE_NAME -f"
-echo ""
-echo "SearXNG logs:"
-echo "  docker logs $CONTAINER_NAME -f"
+echo "Release:    ${RELEASE_TAG} (${ARCH_KEY})"
+echo "Binary:     ${INSTALL_BIN}"
+echo "Config:     ${ENV_FILE}"
+echo "SearXNG:    ${SEARXNG_URL}"
+echo "Service:    systemctl status ${SERVICE_NAME}"
 echo ""
 if [[ -n "${PUBLIC_IPV4}" ]]; then
-  echo "App URL:"
-  echo "  http://${PUBLIC_IPV4}:${APP_PORT}"
+  echo "Access Mixer at: http://${PUBLIC_IPV4}:${APP_PORT}"
 else
-  echo "App URL:"
-  echo "  http://<your-public-ip>:${APP_PORT}"
+  echo "Access Mixer at: http://<your-public-ip>:${APP_PORT}"
 fi
 echo ""
+if [[ -z "$VULTR_INFERENCE_API_KEY" ]]; then
+  echo "Reminder: VULTR_INFERENCE_API_KEY is empty in ${ENV_FILE}."
+  echo "Set it (and any other keys) then restart:"
+  echo "  sudo systemctl restart ${SERVICE_NAME}"
+fi

@@ -5,6 +5,8 @@
 > [!NOTE]
 > Mixer was built for the **AI Agent Olympics 2026 and TECHEX Hackathon 2026 on lablab.ai** as a **Vultr submission**.
 
+![alt text](https://img.shields.io/badge/A%20nadhi.dev%20project-blue)
+
 ## How it works
 
 ```mermaid
