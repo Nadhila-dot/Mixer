@@ -15,6 +15,7 @@ import {
   IconBtn,
 } from "../lib/glass";
 import { getSsrEnvelope } from "../lib/ssr";
+import { safeUuid } from "../lib/uuid";
 import AppBackground from "../components/AppBackground";
 import Sidebar from "../components/Sidebar";
 import ModelSelector from "../components/ModelSelector";
@@ -75,7 +76,7 @@ export default function Home() {
     const message = text.trim();
     if (!message) return;
     setText("");
-    navigate(`/chat/${crypto.randomUUID()}`, {
+    navigate(`/chat/${safeUuid()}`, {
       state: {
         startAssistant: true,
         message,

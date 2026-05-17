@@ -32,6 +32,7 @@ import {
   smallPillGlass,
 } from "../lib/glass";
 import { getSsrEnvelope } from "../lib/ssr";
+import { safeUuid } from "../lib/uuid";
 import AppBackground from "../components/AppBackground";
 import Sidebar from "../components/Sidebar";
 import ModelSelector from "../components/ModelSelector";
@@ -863,7 +864,7 @@ export default function ChatPage() {
 
     // Home state: create a brand-new chat
     if (!id) {
-      const chatId = crypto.randomUUID();
+      const chatId = safeUuid();
       _pendingChat = {
         chatId,
         message: trimmed,
@@ -1617,7 +1618,7 @@ async function readAttachmentFile(file: File): Promise<PendingAttachment> {
   const textLike = isTextLikeFile(file);
   const content = textLike ? await file.text() : await readFileAsDataUrl(file);
   return {
-    id: crypto.randomUUID(),
+    id: safeUuid(),
     name: file.name,
     mime_type: file.type || "application/octet-stream",
     size: file.size,
