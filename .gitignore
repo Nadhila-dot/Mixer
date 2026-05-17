@@ -12,7 +12,6 @@ pnpm-debug.log*
 
 # Rust
 target/
-Cargo.lock
 
 # Env / secrets
 .env
