@@ -1,0 +1,30 @@
+[package]
+name = "mixer-chat-server"
+version = "0.1.0"
+edition = "2021"
+description = "Single-binary web server: Rust + Monoio backend, React + Vite frontend"
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
+
+[dependencies]
+monoio       = { version = "0.2", features = ["macros", "legacy"] }
+serde        = { version = "1",   features = ["derive"] }
+serde_json   = "1"
+rust-embed   = { version = "8",   features = ["interpolate-folder-path"] }
+mime_guess   = "2"
+httparse     = "1"
+rusqlite     = { version = "0.32", features = ["bundled"] }
+sha2         = "0.10"
+chrono       = { version = "0.4", default-features = false, features = ["clock"] }
+ureq         = { version = "2", features = ["json"] }
+regex        = "1"
+base64       = "0.22"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = true
+panic         = "abort"

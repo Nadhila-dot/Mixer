@@ -1,0 +1,39 @@
+# Node / React
+node_modules/
+dist/
+build/
+.next/
+.vite/
+.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Rust
+target/
+Cargo.lock
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+#dump
+.env
+forge_auth.sqlite3
+frontend/dist/
+target/
+workspaces/
+workspaces
+.vultr/
+.claude/
+.prompts/
+.bugs/
+node_modules/
+

@@ -1,0 +1,164 @@
+@import "tailwindcss";
+
+/* ── Chillax (locally hosted, variable weight) ────────────────────────────
+   The single variable file covers weights 200–800; declaring the full range
+   lets us use font-weight: 300/400/500/etc. without separate face fetches. */
+@font-face {
+  font-family: "Chillax";
+  src: url("/fonts/Chillax-Variable.ttf") format("truetype-variations"),
+       url("/fonts/Chillax-Variable.ttf") format("truetype");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme inline {
+  /* ── Palette ─────────────────────────────────────────── */
+  --color-bg:         #0a0a0c;
+  --color-bg-2:       #111116;
+  --color-surface:    #18181f;
+  --color-surface-2:  #22222c;
+  --color-border:     #2a2a35;
+  --color-border-2:   #3a3a48;
+
+  --color-text:       #eeeef2;
+  --color-text-2:     #9999aa;
+  --color-text-3:     #55556a;
+
+  --color-ember:      #f97316;
+  --color-ember-dim:  #f9731618;
+  --color-ember-glow: #f9731630;
+
+  --color-violet:     #a855f7;
+  --color-blue:       #38bdf8;
+  --color-green:      #4ade80;
+  --color-red:        #f87171;
+  --color-amber:      #fbbf24;
+
+  /* ── Typography ──────────────────────────────────────── */
+  --font-display: "Syne", system-ui, sans-serif;
+  --font-body:    "DM Sans", system-ui, sans-serif;
+  --font-mono:    "DM Mono", "JetBrains Mono", ui-monospace, monospace;
+
+  /* ── Radii ───────────────────────────────────────────── */
+  --radius-sm:  4px;
+  --radius-md:  8px;
+  --radius-lg:  12px;
+  --radius-xl:  16px;
+  --radius-2xl: 24px;
+}
+
+/* ── Base ──────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  /* Chillax first, then Quicksand (similar rounded sans) as CDN fallback, then DM Sans */
+  font-family: 'Chillax', 'Quicksand', 'DM Sans', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* Dot-grid — covered naturally on pages that have a video background */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(circle, #2a2a35 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.35;
+  pointer-events: none;
+  z-index: 0;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+code, pre, kbd, .mono {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--color-ember) 25%, transparent);
+}
+
+/* Chat input placeholder — muted white */
+textarea::placeholder,
+input::placeholder {
+  color: rgba(255, 255, 255, 0.28);
+}
+
+/* Hide scrollbar in textareas */
+textarea::-webkit-scrollbar { display: none; }
+textarea { scrollbar-width: none; }
+
+/* ── Scrollbar ─────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--color-border-2); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-3); }
+
+/* ── Animations ────────────────────────────────────────── */
+@keyframes ember-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1);    }
+  50%       { opacity: 0.6; transform: scale(0.85); }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0);    }
+}
+
+@keyframes count-up {
+  from { opacity: 0; transform: translateY(6px) scale(0.95); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease both;
+}
+
+.animate-slide-right {
+  animation: slide-in-right 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Stagger helpers */
+.delay-1 { animation-delay: 0.08s;  }
+.delay-2 { animation-delay: 0.16s; }
+.delay-3 { animation-delay: 0.24s; }
+.delay-4 { animation-delay: 0.32s; }
+.delay-5 { animation-delay: 0.40s; }
+.delay-6 { animation-delay: 0.48s; }
