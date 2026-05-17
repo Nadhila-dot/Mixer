@@ -1,0 +1,112 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: forge-linux-x86_64
+            binary_path: target/x86_64-unknown-linux-gnu/release/forge
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact_name: forge-linux-arm64
+            binary_path: target/aarch64-unknown-linux-gnu/release/forge
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Build frontend bundle
+        working-directory: frontend
+        run: bun run build
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build binary
+        env:
+          FORGE_SKIP_FRONTEND_BUILD: "1"
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "${{ matrix.target }}"
+
+      - name: Stage release asset
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "${{ matrix.binary_path }}" "dist/${{ matrix.artifact_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release manifest
+        run: |
+          set -euo pipefail
+          cat > dist/release.json <<EOF
+          {
+            "repository": "${GITHUB_REPOSITORY}",
+            "tag": "${GITHUB_REF_NAME}",
+            "downloads": {
+              "linux_x86_64": {
+                "name": "forge-linux-x86_64",
+                "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/forge-linux-x86_64"
+              },
+              "linux_arm64": {
+                "name": "forge-linux-arm64",
+                "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/forge-linux-arm64"
+              }
+            }
+          }
+          EOF
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/forge-linux-x86_64
+            dist/forge-linux-arm64
+            dist/release.json

@@ -13,6 +13,11 @@ fn main() {
 
     bundle_skills();
 
+    if frontend_bundle_is_forced_skip() {
+        println!("cargo:warning=FORGE_SKIP_FRONTEND_BUILD=1: skipping Vite bundle");
+        return;
+    }
+
     // Debug builds skip the Vite bundle if dist/ already exists.
     // This makes `cargo run` fast in dev — Vite's own HMR serves live files.
     // Release builds always produce a fresh bundle so the binary is up-to-date.
@@ -26,6 +31,13 @@ fn main() {
 
     install_frontend_deps();
     build_frontend();
+}
+
+fn frontend_bundle_is_forced_skip() -> bool {
+    matches!(
+        std::env::var("FORGE_SKIP_FRONTEND_BUILD").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    )
 }
 
 fn bundle_skills() {
