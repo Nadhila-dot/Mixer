@@ -59,7 +59,7 @@ VULTR_DEFAULT_MODEL="PASTE_YOUR_VULTR_MODEL_NAME_HERE"
 APP_PORT="3000"
 
 ################################################################################
-# ADVANCED SETTINGS — usually do not need changing
+# ADVANCED SETTINGS - usually do not need changing
 ################################################################################
 
 MIXER_DIR="/etc/mixer"
