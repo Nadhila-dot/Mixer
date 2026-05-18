@@ -14,17 +14,6 @@ fn main() {
         return;
     }
 
-    // Debug builds skip the Vite bundle if dist/ already exists.
-    // This makes `cargo run` fast in dev — Vite's own HMR serves live files.
-    // Release builds always produce a fresh bundle so the binary is up-to-date.
-    let is_release = std::env::var("PROFILE").unwrap_or_default() == "release";
-    let dist_exists = Path::new("frontend/dist/index.html").exists();
-
-    if !is_release && dist_exists {
-        println!("cargo:warning=dev mode: skipping Vite bundle (frontend/dist exists)");
-        return;
-    }
-
     install_frontend_deps();
     build_frontend();
 }
