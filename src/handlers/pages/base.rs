@@ -20,5 +20,11 @@ pub async fn home(req: &Request) -> Response {
 
 pub async fn spa_shell(path: &str) -> Response {
     let data = json!({ "requestedPath": path });
-    Response::html(inject(&shell(), SsrPayload { page: "not-found", data }))
+    Response::html(inject(
+        &shell(),
+        SsrPayload {
+            page: "not-found",
+            data,
+        },
+    ))
 }

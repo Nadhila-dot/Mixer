@@ -46,7 +46,11 @@ pub fn stream_chat(model: String, messages: Vec<ChatTurn>) -> Receiver<StreamEve
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = retry_ai_call("stream_chat", || match provider().as_str() {
-            "vultr" => stream_vultr(model.clone(), with_system_prompt(messages.clone()), tx.clone()),
+            "vultr" => stream_vultr(
+                model.clone(),
+                with_system_prompt(messages.clone()),
+                tx.clone(),
+            ),
             other => Err(format!("unsupported AI provider: {other}")),
         });
 
@@ -64,7 +68,10 @@ pub fn complete_chat_with_system_prompt(
     messages: Vec<ChatTurn>,
 ) -> Result<String, String> {
     retry_ai_call("complete_chat", || match provider().as_str() {
-        "vultr" => complete_vultr(model.clone(), with_custom_system_prompt(system_prompt, messages.clone())),
+        "vultr" => complete_vultr(
+            model.clone(),
+            with_custom_system_prompt(system_prompt, messages.clone()),
+        ),
         other => Err(format!("unsupported AI provider: {other}")),
     })
 }
@@ -128,7 +135,10 @@ where
             Ok(value) => return Ok(value),
             Err(error) => {
                 let should_retry = is_retryable_ai_error(&error) && attempt < 3;
-                eprintln!("[ai/retry] {label} attempt={attempt} retry={} error={error}", should_retry);
+                eprintln!(
+                    "[ai/retry] {label} attempt={attempt} retry={} error={error}",
+                    should_retry
+                );
                 last_error = Some(error);
                 if should_retry {
                     std::thread::sleep(Duration::from_millis(250 * attempt as u64));
@@ -225,7 +235,7 @@ fn stream_vultr(
         .post(&format!("{}/chat/completions", vultr_base_url()))
         .set("Authorization", &format!("Bearer {}", vultr_key()?))
         .set("Content-Type", "application/json")
-        .set("Accept", "text/event-stream")        // explicit: ask for SSE back
+        .set("Accept", "text/event-stream") // explicit: ask for SSE back
         .send_json(payload.clone())
         .map_err(|e| {
             eprintln!("[ai/vultr] HTTP error from upstream: {e}");
@@ -346,10 +356,7 @@ fn stream_vultr(
             }
         }
         if !emitted {
-            if let Some(text) = choice
-                .and_then(|c| c.get("text"))
-                .and_then(|c| c.as_str())
-            {
+            if let Some(text) = choice.and_then(|c| c.get("text")).and_then(|c| c.as_str()) {
                 let visible = stripper.process(text);
                 if !visible.is_empty() {
                     debug_upstream_event("delta", &json!({ "text": &visible }));
@@ -458,7 +465,11 @@ impl ThinkStripper {
     }
 
     fn flush(&mut self) -> String {
-        if self.inside { String::new() } else { std::mem::take(&mut self.held) }
+        if self.inside {
+            String::new()
+        } else {
+            std::mem::take(&mut self.held)
+        }
     }
 }
 

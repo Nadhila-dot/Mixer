@@ -24,7 +24,7 @@ impl SqliteAuthStore {
             PRAGMA synchronous = NORMAL;
             ",
         )
-            .map_err(|e| DbError::Query(e.to_string()))?;
+        .map_err(|e| DbError::Query(e.to_string()))?;
         migrate(&conn)?;
         Ok(conn)
     }
@@ -323,22 +323,59 @@ impl AuthStore for SqliteAuthStore {
         })
     }
 
-    fn create_workspace(&self, user_id: i64, uuid: &str, name: &str, created_at: i64) -> Result<super::Workspace, super::DbError> {
+    fn create_workspace(
+        &self,
+        user_id: i64,
+        uuid: &str,
+        name: &str,
+        created_at: i64,
+    ) -> Result<super::Workspace, super::DbError> {
         let conn = self.connect()?;
         conn.execute(
             "INSERT INTO workspaces (uuid, user_id, name, created_at) VALUES (?1, ?2, ?3, ?4)",
             params![uuid, user_id, name, created_at],
         )
         .map_err(|e| super::DbError::Query(e.to_string()))?;
-        Ok(super::Workspace { uuid: uuid.to_string(), name: name.to_string(), created_at })
+        Ok(super::Workspace {
+            uuid: uuid.to_string(),
+            name: name.to_string(),
+            created_at,
+        })
     }
 
-    fn get_workspace(&self, user_id: i64, uuid: &str) -> Result<Option<super::Workspace>, super::DbError> {
+    fn get_workspace(
+        &self,
+        user_id: i64,
+        uuid: &str,
+    ) -> Result<Option<super::Workspace>, super::DbError> {
         let conn = self.connect()?;
         conn.query_row(
             "SELECT uuid, name, created_at FROM workspaces WHERE user_id = ?1 AND uuid = ?2",
             params![user_id, uuid],
-            |row| Ok(super::Workspace { uuid: row.get(0)?, name: row.get(1)?, created_at: row.get(2)? }),
+            |row| {
+                Ok(super::Workspace {
+                    uuid: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| super::DbError::Query(e.to_string()))
+    }
+
+    fn get_workspace_any(&self, uuid: &str) -> Result<Option<super::Workspace>, super::DbError> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT uuid, name, created_at FROM workspaces WHERE uuid = ?1",
+            params![uuid],
+            |row| {
+                Ok(super::Workspace {
+                    uuid: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                })
+            },
         )
         .optional()
         .map_err(|e| super::DbError::Query(e.to_string()))
@@ -351,10 +388,15 @@ impl AuthStore for SqliteAuthStore {
             .map_err(|e| super::DbError::Query(e.to_string()))?;
         let rows = stmt
             .query_map(params![user_id], |row| {
-                Ok(super::Workspace { uuid: row.get(0)?, name: row.get(1)?, created_at: row.get(2)? })
+                Ok(super::Workspace {
+                    uuid: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                })
             })
             .map_err(|e| super::DbError::Query(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| super::DbError::Query(e.to_string()))
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| super::DbError::Query(e.to_string()))
     }
 
     fn update_message_content(&self, msg_uuid: &str, content: &str) -> Result<(), super::DbError> {
@@ -400,7 +442,14 @@ impl AuthStore for SqliteAuthStore {
                  assistant_message_uuid = COALESCE(?4, assistant_message_uuid),
                  ended_at = COALESCE(?5, ended_at)
              WHERE uuid = ?6",
-            params![status, final_text, error_summary, assistant_message_uuid, ended_at, run_uuid],
+            params![
+                status,
+                final_text,
+                error_summary,
+                assistant_message_uuid,
+                ended_at,
+                run_uuid
+            ],
         )
         .map(|_| ())
         .map_err(|e| DbError::Query(e.to_string()))
@@ -436,20 +485,25 @@ impl AuthStore for SqliteAuthStore {
             "SELECT uuid, chat_uuid, user_id, user_message_uuid, assistant_message_uuid, model, status, final_text, error_summary, started_at, ended_at
              FROM agent_runs WHERE chat_uuid = ?1 AND user_id = ?2 ORDER BY started_at ASC",
         ).map_err(|e| DbError::Query(e.to_string()))?;
-        let rows = stmt.query_map(params![chat_uuid, user_id], |row| Ok(AgentRun {
-            uuid: row.get(0)?,
-            chat_uuid: row.get(1)?,
-            user_id: row.get(2)?,
-            user_message_uuid: row.get(3)?,
-            assistant_message_uuid: row.get(4)?,
-            model: row.get(5)?,
-            status: row.get(6)?,
-            final_text: row.get(7)?,
-            error_summary: row.get(8)?,
-            started_at: row.get(9)?,
-            ended_at: row.get(10)?,
-        })).map_err(|e| DbError::Query(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| DbError::Query(e.to_string()))
+        let rows = stmt
+            .query_map(params![chat_uuid, user_id], |row| {
+                Ok(AgentRun {
+                    uuid: row.get(0)?,
+                    chat_uuid: row.get(1)?,
+                    user_id: row.get(2)?,
+                    user_message_uuid: row.get(3)?,
+                    assistant_message_uuid: row.get(4)?,
+                    model: row.get(5)?,
+                    status: row.get(6)?,
+                    final_text: row.get(7)?,
+                    error_summary: row.get(8)?,
+                    started_at: row.get(9)?,
+                    ended_at: row.get(10)?,
+                })
+            })
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| DbError::Query(e.to_string()))
     }
 
     fn insert_tool_call(&self, call: &ToolCall) -> Result<(), DbError> {
@@ -497,25 +551,37 @@ impl AuthStore for SqliteAuthStore {
             "SELECT uuid, run_uuid, parent_call_uuid, seq, name, args_json, body, status, output, error, attempt, started_at, ended_at
              FROM tool_calls WHERE run_uuid = ?1 ORDER BY seq ASC, attempt ASC",
         ).map_err(|e| DbError::Query(e.to_string()))?;
-        let rows = stmt.query_map(params![run_uuid], |row| Ok(ToolCall {
-            uuid: row.get(0)?,
-            run_uuid: row.get(1)?,
-            parent_call_uuid: row.get(2)?,
-            seq: row.get(3)?,
-            name: row.get(4)?,
-            args_json: row.get(5)?,
-            body: row.get(6)?,
-            status: row.get(7)?,
-            output: row.get(8)?,
-            error: row.get(9)?,
-            attempt: row.get(10)?,
-            started_at: row.get(11)?,
-            ended_at: row.get(12)?,
-        })).map_err(|e| DbError::Query(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| DbError::Query(e.to_string()))
+        let rows = stmt
+            .query_map(params![run_uuid], |row| {
+                Ok(ToolCall {
+                    uuid: row.get(0)?,
+                    run_uuid: row.get(1)?,
+                    parent_call_uuid: row.get(2)?,
+                    seq: row.get(3)?,
+                    name: row.get(4)?,
+                    args_json: row.get(5)?,
+                    body: row.get(6)?,
+                    status: row.get(7)?,
+                    output: row.get(8)?,
+                    error: row.get(9)?,
+                    attempt: row.get(10)?,
+                    started_at: row.get(11)?,
+                    ended_at: row.get(12)?,
+                })
+            })
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| DbError::Query(e.to_string()))
     }
 
-    fn insert_event(&self, run_uuid: &str, seq: i64, event_type: &str, payload_json: &str, created_at: i64) -> Result<(), DbError> {
+    fn insert_event(
+        &self,
+        run_uuid: &str,
+        seq: i64,
+        event_type: &str,
+        payload_json: &str,
+        created_at: i64,
+    ) -> Result<(), DbError> {
         let conn = self.connect()?;
         conn.execute(
             "INSERT INTO agent_events (run_uuid, seq, event_type, payload_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -530,13 +596,18 @@ impl AuthStore for SqliteAuthStore {
         let mut stmt = conn.prepare(
             "SELECT seq, event_type, payload_json, created_at FROM agent_events WHERE run_uuid = ?1 AND seq > ?2 ORDER BY seq ASC",
         ).map_err(|e| DbError::Query(e.to_string()))?;
-        let rows = stmt.query_map(params![run_uuid, since], |row| Ok(AgentEvent {
-            seq: row.get(0)?,
-            event_type: row.get(1)?,
-            payload_json: row.get(2)?,
-            created_at: row.get(3)?,
-        })).map_err(|e| DbError::Query(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| DbError::Query(e.to_string()))
+        let rows = stmt
+            .query_map(params![run_uuid, since], |row| {
+                Ok(AgentEvent {
+                    seq: row.get(0)?,
+                    event_type: row.get(1)?,
+                    payload_json: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| DbError::Query(e.to_string()))
     }
 
     fn max_event_seq(&self, run_uuid: &str) -> Result<i64, DbError> {
@@ -570,7 +641,11 @@ impl AuthStore for SqliteAuthStore {
         Ok(result.unwrap_or_default())
     }
 
-    fn upsert_user_settings(&self, user_id: i64, settings: &super::UserSettings) -> Result<(), DbError> {
+    fn upsert_user_settings(
+        &self,
+        user_id: i64,
+        settings: &super::UserSettings,
+    ) -> Result<(), DbError> {
         let conn = self.connect()?;
         conn.execute(
             "INSERT INTO user_settings (user_id, base_style, characteristics_json, custom_instructions, updated_at) \
@@ -613,15 +688,21 @@ impl AuthStore for SqliteAuthStore {
             .map_err(|e| DbError::Query(e.to_string()))?;
         // agent_runs is indexed by user_id directly — clean those too so streamed
         // run history doesn't survive a "delete all chats" action.
-        conn.execute("DELETE FROM agent_runs WHERE user_id = ?1", params![user_id])
-            .map_err(|e| DbError::Query(e.to_string()))?;
+        conn.execute(
+            "DELETE FROM agent_runs WHERE user_id = ?1",
+            params![user_id],
+        )
+        .map_err(|e| DbError::Query(e.to_string()))?;
         Ok(chats_deleted)
     }
 
     fn delete_all_workspaces_for_user(&self, user_id: i64) -> Result<usize, DbError> {
         let conn = self.connect()?;
         let deleted = conn
-            .execute("DELETE FROM workspaces WHERE user_id = ?1", params![user_id])
+            .execute(
+                "DELETE FROM workspaces WHERE user_id = ?1",
+                params![user_id],
+            )
             .map_err(|e| DbError::Query(e.to_string()))?;
         Ok(deleted)
     }

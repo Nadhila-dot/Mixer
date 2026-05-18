@@ -8,8 +8,8 @@ use monoio::{
     io::{AsyncReadRent, AsyncWriteRentExt},
     net::TcpStream,
 };
-use serde_json::json;
 use serde::Deserialize;
+use serde_json::json;
 use std::{
     io,
     io::{Read, Write},
@@ -38,8 +38,7 @@ pub async fn handle(mut stream: TcpStream) -> io::Result<()> {
     let mut raw = buf[..n].to_vec();
     read_remaining_body(&mut stream, &mut raw).await?;
 
-    let request = parse_request(&raw)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let request = parse_request(&raw).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
     if is_websocket_request(&request) {
         return handle_websocket(stream, request).await;
@@ -92,7 +91,10 @@ fn parse_request(raw: &[u8]) -> Result<Request, String> {
     let raw_path = req.path.unwrap_or("/");
 
     let (path, query) = match raw_path.find('?') {
-        Some(i) => (raw_path[..i].to_string(), Some(raw_path[i + 1..].to_string())),
+        Some(i) => (
+            raw_path[..i].to_string(),
+            Some(raw_path[i + 1..].to_string()),
+        ),
         None => (raw_path.to_string(), None),
     };
 
@@ -107,7 +109,7 @@ fn parse_request(raw: &[u8]) -> Result<Request, String> {
         method,
         path,
         query,
-        host:  find("host"),
+        host: find("host"),
         cookie: find("cookie"),
         content_type: find("content-type"),
         sec_websocket_key: find("sec-websocket-key"),
@@ -164,8 +166,10 @@ async fn handle_websocket(mut stream: TcpStream, req: Request) -> io::Result<()>
             Ok(None) => {
                 return flush(
                     stream,
-                    Response::json(json!({ "ok": false, "error": "workspace not found" }).to_string())
-                        .with_status(404),
+                    Response::json(
+                        json!({ "ok": false, "error": "workspace not found" }).to_string(),
+                    )
+                    .with_status(404),
                 )
                 .await;
             }
@@ -345,7 +349,11 @@ unsafe fn run_chat_websocket(raw_fd: std::os::fd::RawFd, cookie: Option<String>)
     let input = match serde_json::from_str::<auth::WsChatInput>(&text) {
         Ok(input) => input,
         Err(_) => {
-            write_ws_event(&mut stream, "error", json!({ "error": "invalid websocket payload" }))?;
+            write_ws_event(
+                &mut stream,
+                "error",
+                json!({ "error": "invalid websocket payload" }),
+            )?;
             write_ws_event(&mut stream, "done", json!({ "assistant_message": null }))?;
             let _ = stream.shutdown(std::net::Shutdown::Write);
             return Ok(());
@@ -403,7 +411,11 @@ unsafe fn run_workspace_websocket(
     let input = match serde_json::from_str::<WsWorkspaceInput>(&text) {
         Ok(input) => input,
         Err(_) => {
-            write_ws_event(&mut stream, "error", json!({ "error": "invalid workspace websocket payload" }))?;
+            write_ws_event(
+                &mut stream,
+                "error",
+                json!({ "error": "invalid workspace websocket payload" }),
+            )?;
             let _ = stream.shutdown(std::net::Shutdown::Write);
             return Ok(());
         }
@@ -417,7 +429,7 @@ unsafe fn run_workspace_websocket(
         let file_tree = serde_json::from_str::<serde_json::Value>(
             &crate::workspace::file_tree_json(&workspace_dir),
         )
-            .unwrap_or_else(|_| json!([]));
+        .unwrap_or_else(|_| json!([]));
 
         let content = if path.trim().is_empty() {
             None
@@ -478,7 +490,12 @@ fn write_ws_event(
     event: &str,
     data: serde_json::Value,
 ) -> io::Result<()> {
-    write_ws_text_frame(stream, json!({ "event": event, "data": data }).to_string().as_bytes())
+    write_ws_text_frame(
+        stream,
+        json!({ "event": event, "data": data })
+            .to_string()
+            .as_bytes(),
+    )
 }
 
 fn read_ws_text_frame(stream: &mut std::net::TcpStream) -> io::Result<Option<String>> {

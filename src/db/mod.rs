@@ -55,8 +55,15 @@ pub trait AuthStore {
     ) -> Result<ChatMessage, DbError>;
     fn delete_chat(&self, user_id: i64, uuid: &str) -> Result<bool, DbError>;
 
-    fn create_workspace(&self, user_id: i64, uuid: &str, name: &str, created_at: i64) -> Result<Workspace, DbError>;
+    fn create_workspace(
+        &self,
+        user_id: i64,
+        uuid: &str,
+        name: &str,
+        created_at: i64,
+    ) -> Result<Workspace, DbError>;
     fn get_workspace(&self, user_id: i64, uuid: &str) -> Result<Option<Workspace>, DbError>;
+    fn get_workspace_any(&self, uuid: &str) -> Result<Option<Workspace>, DbError>;
     fn list_workspaces(&self, user_id: i64) -> Result<Vec<Workspace>, DbError>;
     fn update_message_content(&self, msg_uuid: &str, content: &str) -> Result<(), DbError>;
 
@@ -88,7 +95,14 @@ pub trait AuthStore {
     fn tool_calls_for_run(&self, run_uuid: &str) -> Result<Vec<ToolCall>, DbError>;
 
     // Events
-    fn insert_event(&self, run_uuid: &str, seq: i64, event_type: &str, payload_json: &str, created_at: i64) -> Result<(), DbError>;
+    fn insert_event(
+        &self,
+        run_uuid: &str,
+        seq: i64,
+        event_type: &str,
+        payload_json: &str,
+        created_at: i64,
+    ) -> Result<(), DbError>;
     fn events_for_run_since(&self, run_uuid: &str, since: i64) -> Result<Vec<AgentEvent>, DbError>;
     fn max_event_seq(&self, run_uuid: &str) -> Result<i64, DbError>;
 
@@ -306,7 +320,12 @@ impl AuthStore for UnsupportedAuthStore {
         Err(self.error())
     }
 
-    fn create_user(&self, _name: &str, _email: &str, _password_hash: &str) -> Result<User, DbError> {
+    fn create_user(
+        &self,
+        _name: &str,
+        _email: &str,
+        _password_hash: &str,
+    ) -> Result<User, DbError> {
         Err(self.error())
     }
 
@@ -376,11 +395,21 @@ impl AuthStore for UnsupportedAuthStore {
         Err(self.error())
     }
 
-    fn create_workspace(&self, _user_id: i64, _uuid: &str, _name: &str, _created_at: i64) -> Result<Workspace, DbError> {
+    fn create_workspace(
+        &self,
+        _user_id: i64,
+        _uuid: &str,
+        _name: &str,
+        _created_at: i64,
+    ) -> Result<Workspace, DbError> {
         Err(self.error())
     }
 
     fn get_workspace(&self, _user_id: i64, _uuid: &str) -> Result<Option<Workspace>, DbError> {
+        Err(self.error())
+    }
+
+    fn get_workspace_any(&self, _uuid: &str) -> Result<Option<Workspace>, DbError> {
         Err(self.error())
     }
 
@@ -392,7 +421,9 @@ impl AuthStore for UnsupportedAuthStore {
         Err(self.error())
     }
 
-    fn create_run(&self, _run: &AgentRun) -> Result<(), DbError> { Err(self.error()) }
+    fn create_run(&self, _run: &AgentRun) -> Result<(), DbError> {
+        Err(self.error())
+    }
     fn update_run_status(
         &self,
         _run_uuid: &str,
@@ -401,11 +432,19 @@ impl AuthStore for UnsupportedAuthStore {
         _error_summary: Option<&str>,
         _assistant_message_uuid: Option<&str>,
         _ended_at: Option<i64>,
-    ) -> Result<(), DbError> { Err(self.error()) }
-    fn get_run(&self, _user_id: i64, _run_uuid: &str) -> Result<Option<AgentRun>, DbError> { Err(self.error()) }
-    fn runs_for_chat(&self, _user_id: i64, _chat_uuid: &str) -> Result<Vec<AgentRun>, DbError> { Err(self.error()) }
+    ) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn get_run(&self, _user_id: i64, _run_uuid: &str) -> Result<Option<AgentRun>, DbError> {
+        Err(self.error())
+    }
+    fn runs_for_chat(&self, _user_id: i64, _chat_uuid: &str) -> Result<Vec<AgentRun>, DbError> {
+        Err(self.error())
+    }
 
-    fn insert_tool_call(&self, _call: &ToolCall) -> Result<(), DbError> { Err(self.error()) }
+    fn insert_tool_call(&self, _call: &ToolCall) -> Result<(), DbError> {
+        Err(self.error())
+    }
     fn update_tool_call_status(
         &self,
         _call_uuid: &str,
@@ -414,16 +453,47 @@ impl AuthStore for UnsupportedAuthStore {
         _error: Option<&str>,
         _started_at: Option<i64>,
         _ended_at: Option<i64>,
-    ) -> Result<(), DbError> { Err(self.error()) }
-    fn tool_calls_for_run(&self, _run_uuid: &str) -> Result<Vec<ToolCall>, DbError> { Err(self.error()) }
+    ) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn tool_calls_for_run(&self, _run_uuid: &str) -> Result<Vec<ToolCall>, DbError> {
+        Err(self.error())
+    }
 
-    fn insert_event(&self, _run_uuid: &str, _seq: i64, _event_type: &str, _payload_json: &str, _created_at: i64) -> Result<(), DbError> { Err(self.error()) }
-    fn events_for_run_since(&self, _run_uuid: &str, _since: i64) -> Result<Vec<AgentEvent>, DbError> { Err(self.error()) }
-    fn max_event_seq(&self, _run_uuid: &str) -> Result<i64, DbError> { Err(self.error()) }
+    fn insert_event(
+        &self,
+        _run_uuid: &str,
+        _seq: i64,
+        _event_type: &str,
+        _payload_json: &str,
+        _created_at: i64,
+    ) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn events_for_run_since(
+        &self,
+        _run_uuid: &str,
+        _since: i64,
+    ) -> Result<Vec<AgentEvent>, DbError> {
+        Err(self.error())
+    }
+    fn max_event_seq(&self, _run_uuid: &str) -> Result<i64, DbError> {
+        Err(self.error())
+    }
 
-    fn get_user_settings(&self, _user_id: i64) -> Result<UserSettings, DbError> { Err(self.error()) }
-    fn upsert_user_settings(&self, _user_id: i64, _settings: &UserSettings) -> Result<(), DbError> { Err(self.error()) }
-    fn update_user_name(&self, _user_id: i64, _name: &str) -> Result<(), DbError> { Err(self.error()) }
-    fn delete_all_chats_for_user(&self, _user_id: i64) -> Result<usize, DbError> { Err(self.error()) }
-    fn delete_all_workspaces_for_user(&self, _user_id: i64) -> Result<usize, DbError> { Err(self.error()) }
+    fn get_user_settings(&self, _user_id: i64) -> Result<UserSettings, DbError> {
+        Err(self.error())
+    }
+    fn upsert_user_settings(&self, _user_id: i64, _settings: &UserSettings) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn update_user_name(&self, _user_id: i64, _name: &str) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn delete_all_chats_for_user(&self, _user_id: i64) -> Result<usize, DbError> {
+        Err(self.error())
+    }
+    fn delete_all_workspaces_for_user(&self, _user_id: i64) -> Result<usize, DbError> {
+        Err(self.error())
+    }
 }

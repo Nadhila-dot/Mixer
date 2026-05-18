@@ -1,5 +1,5 @@
-mod assets;
 mod ai;
+mod assets;
 mod auth;
 mod db;
 mod handlers;
@@ -85,9 +85,7 @@ fn load_dotenv() {
 fn is_benign_io_error(e: &io::Error) -> bool {
     matches!(
         e.kind(),
-        io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::BrokenPipe
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
     )
 }
 

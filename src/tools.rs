@@ -52,7 +52,9 @@ pub fn redact_sensitive(input: &str) -> String {
         if let Some(existing) = cache.get(pattern) {
             return existing;
         }
-        let compiled = Box::leak(Box::new(Regex::new(pattern).expect("valid redaction regex")));
+        let compiled = Box::leak(Box::new(
+            Regex::new(pattern).expect("valid redaction regex"),
+        ));
         cache.insert(pattern, compiled);
         compiled
     }
@@ -169,13 +171,35 @@ pub fn parse_assistant_action(raw: &str) -> Result<AssistantAction, String> {
 pub fn executable_tool_names(raw: &str) -> Vec<String> {
     parsed_tools(raw)
         .into_iter()
-        .filter(|tool| matches!(tool.name,
-            "python" | "query" | "end" | "done" | "dothink" | "search"
-            | "createTodo" | "completeTodo" | "viewTodo"
-            | "listSkills" | "readSkill"
-            | "CreateWorkspace" | "WorkspaceStatus" | "Command" | "LongRunProcess"
-            | "CreateFile" | "AppendFile" | "PatchFile" | "Preview" | "ReadFile" | "DeleteFile" | "CreateDirectory" | "DeleteDirectory"
-        ))
+        .filter(|tool| {
+            matches!(
+                tool.name,
+                "python"
+                    | "query"
+                    | "end"
+                    | "done"
+                    | "dothink"
+                    | "search"
+                    | "fetchUrl"
+                    | "createTodo"
+                    | "completeTodo"
+                    | "viewTodo"
+                    | "listSkills"
+                    | "readSkill"
+                    | "CreateWorkspace"
+                    | "WorkspaceStatus"
+                    | "Command"
+                    | "LongRunProcess"
+                    | "CreateFile"
+                    | "AppendFile"
+                    | "PatchFile"
+                    | "Preview"
+                    | "ReadFile"
+                    | "DeleteFile"
+                    | "CreateDirectory"
+                    | "DeleteDirectory"
+            )
+        })
         .map(|tool| tool.name.to_string())
         .collect()
 }
@@ -186,7 +210,9 @@ pub fn process_assistant_text(raw: &str, transcript: &str, model: &str, user_id:
 
     for tool in parsed_tools(raw) {
         out.push_str(&raw[cursor..tool.start]);
-        out.push_str(&execute_tool(tool.name, tool.attrs, tool.body, transcript, model, user_id));
+        out.push_str(&execute_tool(
+            tool.name, tool.attrs, tool.body, transcript, model, user_id,
+        ));
         cursor = tool.end;
     }
 
@@ -215,7 +241,9 @@ where
 
     for tool in parsed_tools(raw) {
         out.push_str(&raw[cursor..tool.start]);
-        out.push_str(&execute_tool(tool.name, tool.attrs, tool.body, transcript, model, user_id));
+        out.push_str(&execute_tool(
+            tool.name, tool.attrs, tool.body, transcript, model, user_id,
+        ));
         cursor = tool.end;
         on_tool_done(&out);
     }
@@ -254,8 +282,9 @@ pub fn parsed_tools_owned(raw: &str) -> Vec<ParsedToolOwned> {
         .into_iter()
         .map(|t| {
             let args_json = serde_json::to_string(
-                &t.attrs.iter().collect::<std::collections::BTreeMap<_, _>>()
-            ).unwrap_or_else(|_| "{}".into());
+                &t.attrs.iter().collect::<std::collections::BTreeMap<_, _>>(),
+            )
+            .unwrap_or_else(|_| "{}".into());
             ParsedToolOwned {
                 name: t.name.to_string(),
                 attrs: t.attrs,
@@ -367,8 +396,12 @@ pub fn first_complete_tool(raw: &str) -> Option<(ParsedToolOwned, usize, usize)>
     let tools = parsed_tools(raw);
     let first = tools.into_iter().next()?;
     let args_json = serde_json::to_string(
-        &first.attrs.iter().collect::<std::collections::BTreeMap<_, _>>()
-    ).unwrap_or_else(|_| "{}".into());
+        &first
+            .attrs
+            .iter()
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    )
+    .unwrap_or_else(|_| "{}".into());
     Some((
         ParsedToolOwned {
             name: first.name.to_string(),
@@ -514,37 +547,36 @@ fn parse_json_assistant_action(raw: &str) -> Result<Option<AssistantAction>, Str
 }
 
 fn parse_json_tool_action(envelope: JsonAssistantEnvelope) -> Result<AssistantAction, String> {
-            let mut merged_args = envelope.arguments;
-            for (key, value) in envelope.extra {
-                if key != "type" && key != "name" && key != "content" && key != "body" {
-                    merged_args.entry(key).or_insert(value);
-                }
-            }
+    let mut merged_args = envelope.arguments;
+    for (key, value) in envelope.extra {
+        if key != "type" && key != "name" && key != "content" && key != "body" {
+            merged_args.entry(key).or_insert(value);
+        }
+    }
 
-            let inferred_name = infer_tool_name(envelope.name.trim(), &merged_args, &envelope.body);
-            let name = inferred_name.trim();
-            if !is_supported_tool(name) {
-                return Err(format!("unsupported tool '{name}'"));
-            }
-            let body = merged_args
-                .remove("body")
-                .map(json_value_to_attr_string)
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| envelope.body.clone());
-            let attrs = merged_args
-                .into_iter()
-                .map(|(k, v)| (k, json_value_to_attr_string(v)))
-                .collect::<HashMap<_, _>>();
-            let args_json = serde_json::to_string(
-                &attrs.iter().collect::<std::collections::BTreeMap<_, _>>(),
-            )
+    let inferred_name = infer_tool_name(envelope.name.trim(), &merged_args, &envelope.body);
+    let name = inferred_name.trim();
+    if !is_supported_tool(name) {
+        return Err(format!("unsupported tool '{name}'"));
+    }
+    let body = merged_args
+        .remove("body")
+        .map(json_value_to_attr_string)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| envelope.body.clone());
+    let attrs = merged_args
+        .into_iter()
+        .map(|(k, v)| (k, json_value_to_attr_string(v)))
+        .collect::<HashMap<_, _>>();
+    let args_json =
+        serde_json::to_string(&attrs.iter().collect::<std::collections::BTreeMap<_, _>>())
             .unwrap_or_else(|_| "{}".into());
-            Ok(AssistantAction::Tool(ParsedToolOwned {
-                name: name.to_string(),
-                attrs,
-                args_json,
-                body,
-            }))
+    Ok(AssistantAction::Tool(ParsedToolOwned {
+        name: name.to_string(),
+        attrs,
+        args_json,
+        body,
+    }))
 }
 
 fn looks_like_json_tool_envelope(envelope: &JsonAssistantEnvelope) -> bool {
@@ -564,9 +596,7 @@ fn looks_like_json_tool_envelope(envelope: &JsonAssistantEnvelope) -> bool {
 
 fn starts_like_json_action(raw: &str) -> bool {
     let trimmed = raw.trim_start();
-    trimmed.starts_with('{')
-        || trimmed.starts_with("```json")
-        || trimmed.starts_with("```")
+    trimmed.starts_with('{') || trimmed.starts_with("```json") || trimmed.starts_with("```")
 }
 
 fn looks_like_incomplete_action(raw: &str) -> bool {
@@ -595,7 +625,10 @@ fn extract_first_json_object(raw: &str) -> Option<String> {
     } else {
         trimmed
     };
-    let candidate = candidate.strip_suffix("```").map(str::trim_end).unwrap_or(candidate);
+    let candidate = candidate
+        .strip_suffix("```")
+        .map(str::trim_end)
+        .unwrap_or(candidate);
 
     let mut start = None;
     let mut depth = 0usize;
@@ -645,7 +678,11 @@ fn json_value_to_attr_string(value: serde_json::Value) -> String {
     match value {
         serde_json::Value::Null => String::new(),
         serde_json::Value::Bool(v) => {
-            if v { "true".into() } else { "false".into() }
+            if v {
+                "true".into()
+            } else {
+                "false".into()
+            }
         }
         serde_json::Value::Number(v) => v.to_string(),
         serde_json::Value::String(v) => v,
@@ -662,15 +699,23 @@ fn infer_tool_name(
         return explicit_name.trim().to_string();
     }
 
-    let has = |key: &str| args.get(key).is_some_and(|value| !json_value_to_attr_string(value.clone()).trim().is_empty());
+    let has = |key: &str| {
+        args.get(key)
+            .is_some_and(|value| !json_value_to_attr_string(value.clone()).trim().is_empty())
+    };
     let body_present = !body.trim().is_empty()
-        || args.get("body").is_some_and(|value| !json_value_to_attr_string(value.clone()).trim().is_empty());
+        || args
+            .get("body")
+            .is_some_and(|value| !json_value_to_attr_string(value.clone()).trim().is_empty());
 
     if has("regex") {
         return "query".into();
     }
     if has("tellmyself") {
         return "dothink".into();
+    }
+    if has("url") {
+        return "fetchUrl".into();
     }
     if has("query") {
         return "search".into();
@@ -687,7 +732,11 @@ fn infer_tool_name(
             .map(|value| json_value_to_attr_string(value.clone()))
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
-        return if timeout > 30 { "LongRunProcess".into() } else { "Command".into() };
+        return if timeout > 30 {
+            "LongRunProcess".into()
+        } else {
+            "Command".into()
+        };
     }
     if has("path") && has("id") && body_present {
         return "CreateFile".into();
@@ -748,7 +797,11 @@ fn parse_open_tag(open: &str) -> Option<(&str, HashMap<String, String>, bool)> {
     }
 
     let name = &open[..split_at];
-    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
         return None;
     }
 
@@ -805,11 +858,33 @@ fn parse_attrs(raw: &str) -> HashMap<String, String> {
 fn is_supported_tool(name: &str) -> bool {
     matches!(
         name,
-        "response" | "python" | "query" | "end" | "done" | "code" | "html" | "dothink" | "search"
-            | "createTodo" | "completeTodo" | "viewTodo"
-            | "listSkills" | "readSkill"
-            | "CreateWorkspace" | "WorkspaceStatus" | "Command" | "LongRunProcess"
-            | "CreateFile" | "AppendFile" | "PatchFile" | "Preview" | "ReadFile" | "DeleteFile" | "CreateDirectory" | "DeleteDirectory"
+        "response"
+            | "python"
+            | "query"
+            | "end"
+            | "done"
+            | "code"
+            | "html"
+            | "dothink"
+            | "search"
+            | "fetchUrl"
+            | "createTodo"
+            | "completeTodo"
+            | "viewTodo"
+            | "listSkills"
+            | "readSkill"
+            | "CreateWorkspace"
+            | "WorkspaceStatus"
+            | "Command"
+            | "LongRunProcess"
+            | "CreateFile"
+            | "AppendFile"
+            | "PatchFile"
+            | "Preview"
+            | "ReadFile"
+            | "DeleteFile"
+            | "CreateDirectory"
+            | "DeleteDirectory"
     )
 }
 
@@ -841,15 +916,29 @@ where
         "python" => tool_result("python", &run_python(body)),
         "query" => tool_result(
             "query",
-            &run_query(attrs.get("regex").map(String::as_str).unwrap_or_default(), transcript),
+            &run_query(
+                attrs.get("regex").map(String::as_str).unwrap_or_default(),
+                transcript,
+            ),
         ),
         "end" => tool_result("end", body.trim()),
-        "done" => tool_result("done", if body.trim().is_empty() { "Task execution complete." } else { body.trim() }),
+        "done" => tool_result(
+            "done",
+            if body.trim().is_empty() {
+                "Task execution complete."
+            } else {
+                body.trim()
+            },
+        ),
         "dothink" => run_dothink(&attrs, body, transcript, model),
         "search" => run_search(
-            attrs.get("query").map(String::as_str).unwrap_or(body.trim()),
+            attrs
+                .get("query")
+                .map(String::as_str)
+                .unwrap_or(body.trim()),
             model,
         ),
+        "fetchUrl" => run_fetch_url(attrs.get("url").map(String::as_str).unwrap_or(body.trim())),
         "createTodo" => run_create_todo(body),
         "completeTodo" => run_complete_todo(
             attrs.get("task").map(String::as_str).unwrap_or(body.trim()),
@@ -871,19 +960,27 @@ where
         }
         "Command" => {
             let ws_id = attrs.get("id").map(String::as_str).unwrap_or("");
-            let command = attrs.get("command").map(String::as_str).unwrap_or(body.trim());
-            let timeout = attrs.get("timeout")
+            let command = attrs
+                .get("command")
+                .map(String::as_str)
+                .unwrap_or(body.trim());
+            let timeout = attrs
+                .get("timeout")
                 .and_then(|t| t.parse::<u64>().ok())
                 .unwrap_or(10);
             ws_command(user_id, ws_id, command, timeout, on_event)
         }
         "LongRunProcess" => {
             let ws_id = attrs.get("id").map(String::as_str).unwrap_or("");
-            let command = attrs.get("command").map(String::as_str).unwrap_or(body.trim());
-            let timeout = attrs.get("timeout")
+            let command = attrs
+                .get("command")
+                .map(String::as_str)
+                .unwrap_or(body.trim());
+            let timeout = attrs
+                .get("timeout")
                 .and_then(|t| t.parse::<u64>().ok())
                 .unwrap_or(60);
-            ws_command(user_id, ws_id, command, timeout, on_event)
+            ws_long_process(user_id, ws_id, command, timeout, on_event)
         }
         "CreateFile" => {
             let ws_id = attrs.get("id").map(String::as_str).unwrap_or("");
@@ -958,7 +1055,9 @@ where
 /// so the UI updates the correct workspace even when the agent supplied the short name.
 fn resolve_workspace(user_id: i64, ws_id: &str) -> Result<(std::path::PathBuf, String), String> {
     if ws_id.is_empty() {
-        return Err("No workspace id provided. Use <CreateWorkspace id=\"name\"/> first.".to_string());
+        return Err(
+            "No workspace id provided. Use <CreateWorkspace id=\"name\"/> first.".to_string(),
+        );
     }
     let store = crate::db::auth_store();
 
@@ -974,9 +1073,13 @@ fn resolve_workspace(user_id: i64, ws_id: &str) -> Result<(std::path::PathBuf, S
     };
 
     // list_workspaces returns ORDER BY created_at DESC, so by_name[0] is the most recent.
-    let by_name: Vec<&crate::db::Workspace> = workspaces.iter().filter(|w| w.name == ws_id).collect();
+    let by_name: Vec<&crate::db::Workspace> =
+        workspaces.iter().filter(|w| w.name == ws_id).collect();
     if let Some(ws) = by_name.first() {
-        return Ok((crate::workspace::workspace_dir(user_id, &ws.uuid), ws.uuid.clone()));
+        return Ok((
+            crate::workspace::workspace_dir(user_id, &ws.uuid),
+            ws.uuid.clone(),
+        ));
     }
 
     let by_prefix: Vec<&crate::db::Workspace> = workspaces
@@ -985,7 +1088,10 @@ fn resolve_workspace(user_id: i64, ws_id: &str) -> Result<(std::path::PathBuf, S
         .collect();
     if by_prefix.len() == 1 {
         let ws = by_prefix[0];
-        return Ok((crate::workspace::workspace_dir(user_id, &ws.uuid), ws.uuid.clone()));
+        return Ok((
+            crate::workspace::workspace_dir(user_id, &ws.uuid),
+            ws.uuid.clone(),
+        ));
     }
 
     if workspaces.is_empty() {
@@ -1021,7 +1127,9 @@ fn ws_tool_result(action: &str, ws_id: &str, body: &str, file_tree_json: &str) -
 }
 
 fn ws_create_workspace(user_id: i64, name: &str) -> String {
-    let clean_name = name.trim().replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
+    let clean_name = name
+        .trim()
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-");
     let ws_id = format!("{}-{}", clean_name, &uuid_hex()[..8]);
     let store = crate::db::auth_store();
     let now = std::time::SystemTime::now()
@@ -1048,7 +1156,10 @@ fn ws_create_workspace(user_id: i64, name: &str) -> String {
                 &tree,
             )
         }
-        Err(e) => tool_result("workspace", &format!("Workspace registered but directory creation failed: {e}")),
+        Err(e) => tool_result(
+            "workspace",
+            &format!("Workspace registered but directory creation failed: {e}"),
+        ),
     }
 }
 
@@ -1056,19 +1167,18 @@ fn ws_status(user_id: i64, ws_id: &str) -> String {
     match resolve_workspace(user_id, ws_id) {
         Ok((dir, canonical)) => {
             let tree = crate::workspace::file_tree_json(&dir);
-            ws_tool_result("WorkspaceStatus", &canonical, &format!("Workspace: {canonical}\n{}", format_tree_text(&dir)), &tree)
+            ws_tool_result(
+                "WorkspaceStatus",
+                &canonical,
+                &format!("Workspace: {canonical}\n{}", format_tree_text(&dir)),
+                &tree,
+            )
         }
         Err(e) => tool_result("workspace", &e),
     }
 }
 
-fn ws_command<F>(
-    user_id: i64,
-    ws_id: &str,
-    command: &str,
-    timeout: u64,
-    on_event: &mut F,
-) -> String
+fn ws_command<F>(user_id: i64, ws_id: &str, command: &str, timeout: u64, on_event: &mut F) -> String
 where
     F: FnMut(ToolExecutionEvent),
 {
@@ -1083,7 +1193,11 @@ where
             let body = format!(
                 "$ {safe_command}\n{}{}\nExit: {} ({}ms{})",
                 safe_output,
-                if safe_output.ends_with('\n') { "" } else { "\n" },
+                if safe_output.ends_with('\n') {
+                    ""
+                } else {
+                    "\n"
+                },
                 result.exit_code,
                 result.duration_ms,
                 if result.timed_out { ", timed out" } else { "" },
@@ -1092,6 +1206,87 @@ where
         }
         Err(e) => tool_result("workspace", &e),
     }
+}
+
+fn ws_long_process<F>(
+    user_id: i64,
+    ws_id: &str,
+    command: &str,
+    timeout: u64,
+    on_event: &mut F,
+) -> String
+where
+    F: FnMut(ToolExecutionEvent),
+{
+    match resolve_workspace(user_id, ws_id) {
+        Ok((dir, canonical)) => {
+            let result =
+                crate::workspace::run_long_process_streaming(&dir, command, timeout, |chunk| {
+                    on_event(ToolExecutionEvent::OutputChunk(redact_sensitive(chunk)));
+                });
+            let tree = crate::workspace::file_tree_json(&dir);
+            let safe_command = redact_sensitive(command);
+            let safe_output = redact_sensitive(&result.combined_output);
+            let proxy_url = if result.port > 0 {
+                format!(
+                    "/api/workspaces/{}/port/{}/",
+                    percent_encode(&canonical),
+                    result.port,
+                )
+            } else {
+                String::new()
+            };
+            let public_url = public_app_url(result.port);
+            let pid_line = result
+                .pid
+                .map(|pid| format!("\nPID: {pid}"))
+                .unwrap_or_default();
+            let body = format!(
+                "$ {safe_command}\n{}{}\nExit: {} ({}ms)\nPORT: {}\nRUNNING: {}{}{}{}",
+                safe_output,
+                if safe_output.ends_with('\n') {
+                    ""
+                } else {
+                    "\n"
+                },
+                result.exit_code,
+                result.duration_ms,
+                result.port,
+                result.running,
+                pid_line,
+                if proxy_url.is_empty() {
+                    String::new()
+                } else {
+                    format!("\nAPP_PREVIEW_URL: {proxy_url}")
+                },
+                public_url
+                    .map(|url| format!("\nPUBLIC_URL: {url}"))
+                    .unwrap_or_default(),
+            );
+            ws_tool_result("LongRunProcess", &canonical, &body, &tree)
+        }
+        Err(e) => tool_result("workspace", &e),
+    }
+}
+
+fn public_app_url(port: u16) -> Option<String> {
+    if port == 0 {
+        return None;
+    }
+    let host = std::env::var("PUBLIC_HOST")
+        .or_else(|_| std::env::var("PUBLIC_IP"))
+        .or_else(|_| std::env::var("VULTR_PUBLIC_IP"))
+        .ok()
+        .map(|value| {
+            value
+                .trim()
+                .trim_start_matches("http://")
+                .trim_start_matches("https://")
+                .trim_end_matches('/')
+                .to_string()
+        })
+        .filter(|value| !value.is_empty())?;
+    Some(format!("http://{host}:{port}/"))
 }
 
 fn ws_create_file(user_id: i64, ws_id: &str, path: &str, content: &str) -> String {
@@ -1112,7 +1307,12 @@ fn ws_append_file(user_id: i64, ws_id: &str, path: &str, content: &str) -> Strin
         Ok((dir, canonical)) => match crate::workspace::append_file(&dir, path, content) {
             Ok(()) => {
                 let tree = crate::workspace::file_tree_json(&dir);
-                ws_tool_result("AppendFile", &canonical, &format!("Appended to: {path}"), &tree)
+                ws_tool_result(
+                    "AppendFile",
+                    &canonical,
+                    &format!("Appended to: {path}"),
+                    &tree,
+                )
             }
             Err(e) => tool_result("workspace", &format!("AppendFile failed: {e}")),
         },
@@ -1125,7 +1325,12 @@ fn ws_patch_file(user_id: i64, ws_id: &str, path: &str, patch: &str) -> String {
         Ok((dir, canonical)) => match crate::workspace::patch_file(&dir, path, patch) {
             Ok(diff) => {
                 let tree = crate::workspace::file_tree_json(&dir);
-                ws_tool_result("PatchFile", &canonical, &format!("Patched: {path}\n\n{diff}"), &tree)
+                ws_tool_result(
+                    "PatchFile",
+                    &canonical,
+                    &format!("Patched: {path}\n\n{diff}"),
+                    &tree,
+                )
             }
             Err(e) => tool_result("workspace", &format!("PatchFile failed: {e}")),
         },
@@ -1142,21 +1347,39 @@ fn ws_preview(user_id: i64, ws_id: &str, path: &str) -> String {
                 percent_encode(&canonical),
                 percent_encode(path),
             );
-            ws_tool_result("Preview", &canonical, &format!("Preview: {path}\nURL: {url}"), &tree)
+            ws_tool_result(
+                "Preview",
+                &canonical,
+                &format!("Preview: {path}\nURL: {url}"),
+                &tree,
+            )
         }
         Err(e) => tool_result("workspace", &e),
     }
 }
 
-fn ws_read_file(user_id: i64, ws_id: &str, path: &str, start_line: usize, max_lines: usize) -> String {
+fn ws_read_file(
+    user_id: i64,
+    ws_id: &str,
+    path: &str,
+    start_line: usize,
+    max_lines: usize,
+) -> String {
     match resolve_workspace(user_id, ws_id) {
-        Ok((dir, canonical)) => match crate::workspace::read_file_window(&dir, path, start_line, max_lines) {
-            Ok(content) => {
-                let tree = crate::workspace::file_tree_json(&dir);
-                ws_tool_result("ReadFile", &canonical, &format!("File: {path}\n\n{content}"), &tree)
+        Ok((dir, canonical)) => {
+            match crate::workspace::read_file_window(&dir, path, start_line, max_lines) {
+                Ok(content) => {
+                    let tree = crate::workspace::file_tree_json(&dir);
+                    ws_tool_result(
+                        "ReadFile",
+                        &canonical,
+                        &format!("File: {path}\n\n{content}"),
+                        &tree,
+                    )
+                }
+                Err(e) => tool_result("workspace", &format!("ReadFile failed: {e}")),
             }
-            Err(e) => tool_result("workspace", &format!("ReadFile failed: {e}")),
-        },
+        }
         Err(e) => tool_result("workspace", &e),
     }
 }
@@ -1182,12 +1405,17 @@ fn ws_delete_file(user_id: i64, ws_id: &str, path: &str) -> String {
     }
 }
 
-fn ws_create_directory(user_id: i64, ws_id:&str, path: &str) -> String {
+fn ws_create_directory(user_id: i64, ws_id: &str, path: &str) -> String {
     match resolve_workspace(user_id, ws_id) {
         Ok((dir, canonical)) => match crate::workspace::create_directory(&dir, path) {
             Ok(()) => {
                 let tree = crate::workspace::file_tree_json(&dir);
-                ws_tool_result("CreateDirectory", &canonical, &format!("Created directory: {path}"), &tree)
+                ws_tool_result(
+                    "CreateDirectory",
+                    &canonical,
+                    &format!("Created directory: {path}"),
+                    &tree,
+                )
             }
             Err(e) => tool_result("workspace", &format!("CreateDirectory failed: {e}")),
         },
@@ -1208,7 +1436,12 @@ fn ws_delete_directory(user_id: i64, ws_id: &str, path: &str) -> String {
         Ok((dir, canonical)) => match crate::workspace::delete_directory(&dir, path) {
             Ok(()) => {
                 let tree = crate::workspace::file_tree_json(&dir);
-                ws_tool_result("DeleteDirectory", &canonical, &format!("Deleted directory: {path}"), &tree)
+                ws_tool_result(
+                    "DeleteDirectory",
+                    &canonical,
+                    &format!("Deleted directory: {path}"),
+                    &tree,
+                )
             }
             Err(e) => tool_result("workspace", &format!("DeleteDirectory failed: {e}")),
         },
@@ -1430,16 +1663,16 @@ fn run_search(query: &str, model: &str) -> String {
                     let mut lines = r.lines();
                     let header = lines.next()?.trim().to_string();
                     let url = lines.next().unwrap_or("").trim().to_string();
-                    Some(if url.is_empty() { header } else { format!("{header}\n{url}") })
+                    Some(if url.is_empty() {
+                        header
+                    } else {
+                        format!("{header}\n{url}")
+                    })
                 })
                 .collect::<Vec<_>>()
                 .join("\n\n");
             // Collapsed block holds sources; polished answer flows as normal text after
-            format!(
-                "{}\n\n{}",
-                search_tool_result(query, &sources),
-                answer,
-            )
+            format!("{}\n\n{}", search_tool_result(query, &sources), answer,)
         }
         Ok(_) => tool_result(
             "search",
@@ -1458,6 +1691,95 @@ fn search_tool_result(query: &str, sources: &str) -> String {
         escape_xml(query),
         escape_xml(&truncate(sources, MAX_TOOL_OUTPUT)),
     )
+}
+
+fn run_fetch_url(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return tool_result("fetchUrl", "No URL was provided.");
+    }
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return tool_result("fetchUrl", "Only http:// and https:// URLs are supported.");
+    }
+
+    let response = match ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(12))
+        .user_agent("MixerEnterpriseAgent/1.0")
+        .build()
+        .get(url)
+        .call()
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, response)) => {
+            let final_url = response.get_url().to_string();
+            let body = read_response_text(response);
+            return format_fetch_url_result(url, Some(code), &final_url, body);
+        }
+        Err(error) => return tool_result("fetchUrl", &format!("URL fetch failed: {error}")),
+    };
+
+    let status = response.status();
+    let final_url = response.get_url().to_string();
+    format_fetch_url_result(url, Some(status), &final_url, read_response_text(response))
+}
+
+fn read_response_text(response: ureq::Response) -> String {
+    match response.into_string() {
+        Ok(text) => readable_page_text(&text),
+        Err(error) => format!("Could not read response body: {error}"),
+    }
+}
+
+fn format_fetch_url_result(
+    requested_url: &str,
+    status: Option<u16>,
+    final_url: &str,
+    body: String,
+) -> String {
+    let status_line = status
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let content = format!(
+        "Requested URL: {requested_url}\nFinal URL: {final_url}\nHTTP status: {status_line}\n\n{}",
+        truncate(&body, MAX_TOOL_OUTPUT),
+    );
+    format!(
+        "<tool_result tool=\"fetchUrl\" url=\"{}\">{}</tool_result>",
+        escape_xml(requested_url),
+        escape_xml(&content),
+    )
+}
+
+fn readable_page_text(raw: &str) -> String {
+    let mut text = raw.to_string();
+    for pattern in [
+        r"(?is)<script[^>]*>.*?</script>",
+        r"(?is)<style[^>]*>.*?</style>",
+        r"(?is)<noscript[^>]*>.*?</noscript>",
+        r"(?is)<!--.*?-->",
+    ] {
+        if let Ok(re) = Regex::new(pattern) {
+            text = re.replace_all(&text, " ").into_owned();
+        }
+    }
+    if let Ok(re) = Regex::new(r"(?is)<[^>]+>") {
+        text = re.replace_all(&text, " ").into_owned();
+    }
+    decode_html_entities(&text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn decode_html_entities(input: &str) -> String {
+    input
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
 }
 
 // ── Todo tool ────────────────────────────────────────────────────────────────
@@ -1516,9 +1838,13 @@ fn find_current_todo(transcript: &str) -> Option<TodoList> {
     let mut last: Option<&str> = None;
     let mut cursor = 0;
     while cursor < transcript.len() {
-        let Some(rel) = transcript[cursor..].find("<tool_result") else { break };
+        let Some(rel) = transcript[cursor..].find("<tool_result") else {
+            break;
+        };
         let abs = cursor + rel;
-        let Some(tag_end_rel) = transcript[abs..].find('>') else { break };
+        let Some(tag_end_rel) = transcript[abs..].find('>') else {
+            break;
+        };
         let tag_end = abs + tag_end_rel;
         let header = &transcript[abs..=tag_end];
         let is_todo = header.contains("createTodo") || header.contains("completeTodo");
@@ -1606,7 +1932,10 @@ fn strip_think_tags(text: &str) -> String {
         let close = format!("</{tag}>");
         loop {
             if let Some(start) = out.find(&open) {
-                let end = out[start..].find(&close).map(|i| start + i + close.len()).unwrap_or(start + open.len());
+                let end = out[start..]
+                    .find(&close)
+                    .map(|i| start + i + close.len())
+                    .unwrap_or(start + open.len());
                 out.drain(start..end);
             } else {
                 break;
@@ -1681,7 +2010,13 @@ fn fetch_searxng(query: &str, base_url: &str) -> Result<Vec<String>, String> {
             let href = r["url"].as_str().unwrap_or("");
             let content = r["content"].as_str().unwrap_or("");
             if !title.is_empty() || !content.is_empty() {
-                parts.push(format!("[Source {}] {}\n{}\n{}", i + 1, title, href, content));
+                parts.push(format!(
+                    "[Source {}] {}\n{}\n{}",
+                    i + 1,
+                    title,
+                    href,
+                    content
+                ));
             }
         }
     }
@@ -1716,7 +2051,13 @@ fn fetch_google(query: &str, api_key: &str, cx: &str) -> Result<Vec<String>, Str
                     let title = r["title"].as_str()?;
                     let link = r["link"].as_str()?;
                     let snippet = r["snippet"].as_str().unwrap_or("");
-                    Some(format!("[Source {}] {}\n{}\n{}", i + 1, title, link, snippet))
+                    Some(format!(
+                        "[Source {}] {}\n{}\n{}",
+                        i + 1,
+                        title,
+                        link,
+                        snippet
+                    ))
                 })
                 .collect()
         })
@@ -1755,7 +2096,13 @@ fn fetch_brave(query: &str, api_key: &str) -> Result<Vec<String>, String> {
                         .and_then(|s| s.as_str())
                         .unwrap_or("");
                     let snippet = if extra.is_empty() { desc } else { extra };
-                    Some(format!("[Source {}] {}\n{}\n{}", i + 1, title, url, snippet))
+                    Some(format!(
+                        "[Source {}] {}\n{}\n{}",
+                        i + 1,
+                        title,
+                        url,
+                        snippet
+                    ))
                 })
                 .collect()
         })
@@ -1788,8 +2135,14 @@ fn incomplete_tool_result(tool: &str, body: &str) -> String {
     match tool {
         "response" => body.trim().to_string(),
         "code" => rebuild_tool("code", HashMap::new(), body),
-        "html" => tool_result("html", "The HTML tool call was incomplete and was not rendered."),
-        "dothink" => tool_result("dothink", "The dothink tool call was incomplete and was not executed."),
+        "html" => tool_result(
+            "html",
+            "The HTML tool call was incomplete and was not rendered.",
+        ),
+        "dothink" => tool_result(
+            "dothink",
+            "The dothink tool call was incomplete and was not executed.",
+        ),
         "done" => tool_result("done", "The done tool call was incomplete."),
         _ => tool_result(
             tool,

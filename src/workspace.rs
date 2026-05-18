@@ -1,8 +1,10 @@
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Read},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
-    process::Command as StdCommand,
-    sync::mpsc,
+    process::{Child, Command as StdCommand},
+    sync::{mpsc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -22,7 +24,9 @@ pub fn workspaces_root() -> PathBuf {
 }
 
 pub fn workspace_dir(user_id: i64, workspace_uuid: &str) -> PathBuf {
-    workspaces_root().join(user_id.to_string()).join(workspace_uuid)
+    workspaces_root()
+        .join(user_id.to_string())
+        .join(workspace_uuid)
 }
 
 /// Resolves a relative path inside a workspace, rejecting any path that
@@ -180,7 +184,8 @@ pub fn append_file(workspace_dir: &Path, relative: &str, content: &str) -> Resul
         .append(true)
         .open(&target)
         .map_err(|e| format!("Could not open file for append: {e}"))?;
-    file.write_all(content.as_bytes()).map_err(|e| format!("Could not append to file: {e}"))
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Could not append to file: {e}"))
 }
 
 fn ensure_safe_existing_file(path: &Path) -> Result<(), String> {
@@ -242,6 +247,20 @@ pub struct CommandResult {
     pub timed_out: bool,
 }
 
+pub struct LongProcessResult {
+    pub exit_code: i32,
+    pub combined_output: String,
+    pub duration_ms: u64,
+    pub port: u16,
+    pub pid: Option<u32>,
+    pub running: bool,
+}
+
+fn long_processes() -> &'static Mutex<HashMap<u32, Child>> {
+    static MAP: OnceLock<Mutex<HashMap<u32, Child>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn is_forbidden_command(command: &str) -> Option<&'static str> {
     let cmd = command.trim();
     let lower = cmd.to_lowercase();
@@ -282,7 +301,11 @@ fn approval_required_command(command: &str) -> Option<&'static str> {
     ) {
         return Some("destructive filesystem/process command requires user approval");
     }
-    if exe == "git" && argv.iter().any(|arg| matches!(arg.as_str(), "clean" | "reset" | "checkout" | "restore")) {
+    if exe == "git"
+        && argv
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "clean" | "reset" | "checkout" | "restore"))
+    {
         return Some("destructive git operation requires user approval");
     }
 
@@ -446,7 +469,11 @@ where
         };
     }
 
-    let timeout = if timeout_secs == 0 { DEFAULT_TIMEOUT_SECS } else { timeout_secs.min(MAX_TIMEOUT_SECS) };
+    let timeout = if timeout_secs == 0 {
+        DEFAULT_TIMEOUT_SECS
+    } else {
+        timeout_secs.min(MAX_TIMEOUT_SECS)
+    };
     let start = Instant::now();
     let tmp_dir = prepare_tmp_dir(workspace_dir);
     let mut cmd = command_program(workspace_dir, &tmp_dir);
@@ -565,6 +592,188 @@ where
     }
 }
 
+pub fn run_long_process_streaming<F>(
+    workspace_dir: &Path,
+    command: &str,
+    timeout_secs: u64,
+    mut on_chunk: F,
+) -> LongProcessResult
+where
+    F: FnMut(&str),
+{
+    if let Some(reason) = is_forbidden_command(command) {
+        return LongProcessResult {
+            exit_code: 126,
+            combined_output: format!("Command blocked: {reason}"),
+            duration_ms: 0,
+            port: 0,
+            pid: None,
+            running: false,
+        };
+    }
+    if let Some(reason) = approval_required_command(command) {
+        return LongProcessResult {
+            exit_code: 125,
+            combined_output: format!("Approval required: {reason}. Ask the user to approve this command before running it."),
+            duration_ms: 0,
+            port: 0,
+            pid: None,
+            running: false,
+        };
+    }
+    if uses_sshpass(command) && !sshpass_available() {
+        return LongProcessResult {
+            exit_code: 127,
+            combined_output: "Command requires sshpass, but sshpass is not installed on this macOS host. Prefer SSH keys, ask for an interactive-safe connection method, or ask for approval to install sshpass. On macOS, sshpass is usually not installed by default and may require a third-party Homebrew tap.".to_string(),
+            duration_ms: 0,
+            port: 0,
+            pid: None,
+            running: false,
+        };
+    }
+
+    let port = find_available_port().unwrap_or(4173);
+    let timeout = if timeout_secs == 0 {
+        20
+    } else {
+        timeout_secs.min(MAX_TIMEOUT_SECS)
+    };
+    let start = Instant::now();
+    let tmp_dir = prepare_tmp_dir(workspace_dir);
+    let mut cmd = command_program(workspace_dir, &tmp_dir);
+    cmd.arg(command)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    prepare_command_env(&mut cmd, workspace_dir, &tmp_dir);
+    cmd.env("PORT", port.to_string())
+        .env("HOST", "0.0.0.0")
+        .env("BIND_HOST", "0.0.0.0");
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            return LongProcessResult {
+                exit_code: -1,
+                combined_output: format!("Failed to execute command: {e}"),
+                duration_ms: 0,
+                port,
+                pid: None,
+                running: false,
+            }
+        }
+    };
+    let pid = child.id();
+
+    let (tx, rx) = mpsc::channel::<String>();
+    if let Some(mut stdout) = child.stdout.take() {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            loop {
+                match stdout.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(mut stderr) = child.stderr.take() {
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            loop {
+                match stderr.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    drop(tx);
+
+    let mut combined = String::new();
+    loop {
+        while let Ok(chunk) = rx.try_recv() {
+            on_chunk(&chunk);
+            combined.push_str(&chunk);
+            if combined.len() > MAX_OUTPUT_BYTES {
+                combined.truncate(MAX_OUTPUT_BYTES);
+                combined.push_str("\n[output truncated]");
+            }
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return LongProcessResult {
+                    exit_code: status.code().unwrap_or(-1),
+                    combined_output: combined,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    port,
+                    pid: Some(pid),
+                    running: false,
+                };
+            }
+            Ok(None) => {
+                if port_accepts_connections(port) || start.elapsed() >= Duration::from_secs(timeout)
+                {
+                    let running = port_accepts_connections(port);
+                    if !combined.is_empty() && !combined.ends_with('\n') {
+                        combined.push('\n');
+                    }
+                    if running {
+                        combined.push_str(&format!(
+                            "Long-running process is active on port {port} (pid {pid})."
+                        ));
+                    } else {
+                        combined.push_str(&format!("Long-running process started (pid {pid}), but port {port} was not reachable within {timeout}s."));
+                    }
+                    long_processes().lock().unwrap().insert(pid, child);
+                    return LongProcessResult {
+                        exit_code: if running { 0 } else { 124 },
+                        combined_output: combined,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        port,
+                        pid: Some(pid),
+                        running,
+                    };
+                }
+                thread::sleep(Duration::from_millis(80));
+            }
+            Err(e) => {
+                combined.push_str(&format!("\nFailed while waiting for process: {e}"));
+                return LongProcessResult {
+                    exit_code: -1,
+                    combined_output: combined,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    port,
+                    pid: Some(pid),
+                    running: false,
+                };
+            }
+        }
+    }
+}
+
+fn find_available_port() -> Option<u16> {
+    for port in 4100..4999 {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Some(port);
+        }
+    }
+    None
+}
+
+fn port_accepts_connections(port: u16) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(120)).is_ok()
+}
+
 // ── File tree ───────────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, Clone)]
@@ -581,7 +790,9 @@ pub fn file_tree(dir: &Path, workspace_root: &Path, depth: usize) -> Vec<FileEnt
     if depth > 8 {
         return vec![];
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
     let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
     entries.sort_by(|a, b| {
         let a_is_file = a.path().is_file();
@@ -620,7 +831,13 @@ pub fn file_tree(dir: &Path, workspace_root: &Path, depth: usize) -> Vec<FileEnt
             } else {
                 None
             };
-            Some(FileEntry { name, path: rel, is_dir, size, children })
+            Some(FileEntry {
+                name,
+                path: rel,
+                is_dir,
+                size,
+                children,
+            })
         })
         .collect()
 }
@@ -632,80 +849,22 @@ pub fn file_tree_json(workspace_dir: &Path) -> String {
 
 fn apply_unified_patch(original: &str, patch: &str) -> Result<String, String> {
     let original_lines = split_lines_lossless(original);
-    let patch_lines = split_lines_lossless(patch);
+    let patch = normalize_patch_text(patch);
+    let hunks = parse_patch_hunks(&patch)?;
+    if hunks.is_empty() {
+        return Err("Patch contains no unified diff hunks".into());
+    }
+
     let mut out = Vec::<String>::new();
     let mut src_idx = 0usize;
-    let mut i = 0usize;
-    let mut saw_hunk = false;
 
-    while i < patch_lines.len() {
-        let line = strip_line_ending(&patch_lines[i]);
-        if line.starts_with("--- ") || line.starts_with("+++ ") || line.starts_with("diff ") || line.starts_with("index ") {
-            i += 1;
-            continue;
-        }
-        if !line.starts_with("@@") {
-            i += 1;
-            continue;
-        }
-
-        saw_hunk = true;
-        let (old_start, _old_count) = parse_hunk_header(line)?;
-        let target_idx = old_start.saturating_sub(1);
-        while src_idx < target_idx && src_idx < original_lines.len() {
+    for hunk in &hunks {
+        let apply_idx = locate_hunk_start(&original_lines, src_idx, hunk)?;
+        while src_idx < apply_idx && src_idx < original_lines.len() {
             out.push(original_lines[src_idx].clone());
             src_idx += 1;
         }
-        i += 1;
-
-        while i < patch_lines.len() {
-            let raw = &patch_lines[i];
-            let marker = raw.chars().next().unwrap_or(' ');
-            let body = raw.get(1..).unwrap_or_default().to_string();
-            let headerish = strip_line_ending(raw);
-            if headerish.starts_with("@@") {
-                break;
-            }
-            match marker {
-                ' ' => {
-                    let Some(src) = original_lines.get(src_idx) else {
-                        return Err("Patch context extends past end of file".into());
-                    };
-                    if strip_line_ending(src) != strip_line_ending(&body) {
-                        return Err(format!(
-                            "Patch context mismatch near line {}. Expected {:?}, got {:?}",
-                            src_idx + 1,
-                            strip_line_ending(&body),
-                            strip_line_ending(src),
-                        ));
-                    }
-                    out.push(src.clone());
-                    src_idx += 1;
-                }
-                '-' => {
-                    let Some(src) = original_lines.get(src_idx) else {
-                        return Err("Patch deletion extends past end of file".into());
-                    };
-                    if strip_line_ending(src) != strip_line_ending(&body) {
-                        return Err(format!(
-                            "Patch deletion mismatch near line {}. Expected {:?}, got {:?}",
-                            src_idx + 1,
-                            strip_line_ending(&body),
-                            strip_line_ending(src),
-                        ));
-                    }
-                    src_idx += 1;
-                }
-                '+' => out.push(body),
-                '\\' => {}
-                _ => return Err(format!("Unsupported patch line: {headerish}")),
-            }
-            i += 1;
-        }
-    }
-
-    if !saw_hunk {
-        return Err("Patch contains no unified diff hunks".into());
+        apply_hunk_at(&original_lines, &mut src_idx, &mut out, hunk)?;
     }
 
     while src_idx < original_lines.len() {
@@ -716,7 +875,142 @@ fn apply_unified_patch(original: &str, patch: &str) -> Result<String, String> {
     Ok(out.concat())
 }
 
-fn parse_hunk_header(header: &str) -> Result<(usize, usize), String> {
+#[derive(Debug, Clone)]
+struct ParsedHunk {
+    old_start: usize,
+    new_start: usize,
+    ops: Vec<PatchOp>,
+}
+
+#[derive(Debug, Clone)]
+enum PatchOpKind {
+    Context,
+    Delete,
+    Add,
+}
+
+#[derive(Debug, Clone)]
+struct PatchOp {
+    kind: PatchOpKind,
+    text: String,
+}
+
+fn normalize_patch_text(patch: &str) -> String {
+    let patch = patch.replace("\r\n", "\n");
+    let mut lines = split_lines_lossless(&patch);
+    if let Some(first) = lines.first() {
+        let fence = strip_line_ending(first);
+        if fence == "```" || fence == "```diff" || fence == "```patch" {
+            lines.remove(0);
+            if lines
+                .last()
+                .map(|line| strip_line_ending(line) == "```")
+                .unwrap_or(false)
+            {
+                lines.pop();
+            }
+        }
+    }
+    lines.concat()
+}
+
+fn parse_patch_hunks(patch: &str) -> Result<Vec<ParsedHunk>, String> {
+    let patch_lines = split_lines_lossless(patch);
+    let mut hunks = Vec::new();
+    let mut i = 0usize;
+
+    while i < patch_lines.len() {
+        let line = strip_line_ending(&patch_lines[i]);
+        if should_skip_patch_metadata(line) {
+            i += 1;
+            continue;
+        }
+        if !line.starts_with("@@") {
+            i += 1;
+            continue;
+        }
+
+        let (old_start, old_count, new_start, new_count) = parse_hunk_header(line)?;
+        i += 1;
+        let mut ops: Vec<PatchOp> = Vec::new();
+
+        while i < patch_lines.len() {
+            let raw = &patch_lines[i];
+            let line = strip_line_ending(raw);
+            if line.starts_with("@@") {
+                break;
+            }
+            if should_skip_patch_metadata(line) {
+                break;
+            }
+            if line == r"\ No newline at end of file" {
+                let Some(last) = ops.last_mut() else {
+                    return Err("Patch has a no-newline marker without a preceding line".into());
+                };
+                last.text = strip_line_ending(&last.text).to_string();
+                i += 1;
+                continue;
+            }
+
+            let marker = raw
+                .chars()
+                .next()
+                .ok_or_else(|| "Patch contains an empty hunk line".to_string())?;
+            let text = raw.get(1..).unwrap_or_default().to_string();
+            let kind = match marker {
+                ' ' => PatchOpKind::Context,
+                '-' => PatchOpKind::Delete,
+                '+' => PatchOpKind::Add,
+                _ => {
+                    return Err(format!(
+                        "Patch contains an invalid hunk line prefix {:?}",
+                        marker
+                    ))
+                }
+            };
+            ops.push(PatchOp { kind, text });
+            i += 1;
+        }
+
+        let counted_old = ops
+            .iter()
+            .filter(|op| matches!(op.kind, PatchOpKind::Context | PatchOpKind::Delete))
+            .count();
+        let counted_new = ops
+            .iter()
+            .filter(|op| matches!(op.kind, PatchOpKind::Context | PatchOpKind::Add))
+            .count();
+        if counted_old != old_count {
+            return Err(format!(
+                "Patch hunk old-count mismatch: header says {}, hunk contains {}",
+                old_count, counted_old
+            ));
+        }
+        if counted_new != new_count {
+            return Err(format!(
+                "Patch hunk new-count mismatch: header says {}, hunk contains {}",
+                new_count, counted_new
+            ));
+        }
+
+        hunks.push(ParsedHunk {
+            old_start,
+            new_start,
+            ops,
+        });
+    }
+
+    Ok(hunks)
+}
+
+fn should_skip_patch_metadata(line: &str) -> bool {
+    line.starts_with("--- ")
+        || line.starts_with("+++ ")
+        || line.starts_with("diff ")
+        || line.starts_with("index ")
+}
+
+fn parse_hunk_header(header: &str) -> Result<(usize, usize, usize, usize), String> {
     let rest = header
         .strip_prefix("@@")
         .and_then(|value| value.split("@@").next())
@@ -726,12 +1020,115 @@ fn parse_hunk_header(header: &str) -> Result<(usize, usize), String> {
         .split_ascii_whitespace()
         .find(|part| part.starts_with('-'))
         .ok_or_else(|| "Patch hunk is missing old range".to_string())?;
-    let old = old.trim_start_matches('-');
-    let (start, count) = old.split_once(',').unwrap_or((old, "1"));
+    let new = rest
+        .split_ascii_whitespace()
+        .find(|part| part.starts_with('+'))
+        .ok_or_else(|| "Patch hunk is missing new range".to_string())?;
+    let (old_start, old_count) = parse_hunk_range(old, '-')?;
+    let (new_start, new_count) = parse_hunk_range(new, '+')?;
+    Ok((old_start, old_count, new_start, new_count))
+}
+
+fn parse_hunk_range(value: &str, prefix: char) -> Result<(usize, usize), String> {
+    let value = value.trim_start_matches(prefix);
+    let (start, count) = value.split_once(',').unwrap_or((value, "1"));
     Ok((
-        start.parse::<usize>().map_err(|_| "Invalid hunk start".to_string())?,
-        count.parse::<usize>().map_err(|_| "Invalid hunk count".to_string())?,
+        start
+            .parse::<usize>()
+            .map_err(|_| "Invalid hunk start".to_string())?,
+        count
+            .parse::<usize>()
+            .map_err(|_| "Invalid hunk count".to_string())?,
     ))
+}
+
+fn locate_hunk_start(
+    original_lines: &[String],
+    minimum_idx: usize,
+    hunk: &ParsedHunk,
+) -> Result<usize, String> {
+    let search_start = minimum_idx.min(original_lines.len());
+    let search_end = original_lines.len();
+    let mut matches = Vec::new();
+    for idx in search_start..=search_end {
+        if hunk_matches_at(original_lines, idx, hunk) {
+            matches.push(idx);
+        }
+    }
+
+    match matches.as_slice() {
+        [] => Err(format!(
+            "Patch hunk near -{},+{} could not be matched against the current file",
+            hunk.old_start, hunk.new_start
+        )),
+        [only] => Ok(*only),
+        _ => Err(format!(
+            "Patch hunk near -{},+{} matched multiple locations; refusing ambiguous apply",
+            hunk.old_start, hunk.new_start
+        )),
+    }
+}
+
+fn hunk_matches_at(original_lines: &[String], start_idx: usize, hunk: &ParsedHunk) -> bool {
+    let mut idx = start_idx;
+    for op in &hunk.ops {
+        match op.kind {
+            PatchOpKind::Add => {}
+            PatchOpKind::Context | PatchOpKind::Delete => {
+                let Some(src) = original_lines.get(idx) else {
+                    return false;
+                };
+                if src != &op.text {
+                    return false;
+                }
+                idx += 1;
+            }
+        }
+    }
+    true
+}
+
+fn apply_hunk_at(
+    original_lines: &[String],
+    src_idx: &mut usize,
+    out: &mut Vec<String>,
+    hunk: &ParsedHunk,
+) -> Result<(), String> {
+    for op in &hunk.ops {
+        match op.kind {
+            PatchOpKind::Context => {
+                let Some(src) = original_lines.get(*src_idx) else {
+                    return Err("Patch context extends past end of file".into());
+                };
+                if src != &op.text {
+                    return Err(format!(
+                        "Patch context mismatch near line {}. Expected {:?}, got {:?}",
+                        *src_idx + 1,
+                        strip_line_ending(&op.text),
+                        strip_line_ending(src),
+                    ));
+                }
+                out.push(src.clone());
+                *src_idx += 1;
+            }
+            PatchOpKind::Delete => {
+                let Some(src) = original_lines.get(*src_idx) else {
+                    return Err("Patch deletion extends past end of file".into());
+                };
+                if src != &op.text {
+                    return Err(format!(
+                        "Patch deletion mismatch near line {}. Expected {:?}, got {:?}",
+                        *src_idx + 1,
+                        strip_line_ending(&op.text),
+                        strip_line_ending(src),
+                    ));
+                }
+                *src_idx += 1;
+            }
+            PatchOpKind::Add => out.push(op.text.clone()),
+        }
+    }
+    Ok(())
 }
 
 fn split_lines_lossless(value: &str) -> Vec<String> {
@@ -770,5 +1167,95 @@ fn make_simple_diff(before: &str, after: &str) -> String {
         "No textual changes detected.".into()
     } else {
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_unified_patch;
+
+    #[test]
+    fn applies_basic_patch() {
+        let original = "alpha\nbeta\ngamma\n";
+        let patch = "\
+@@ -1,3 +1,3 @@
+ alpha
+-beta
++delta
+ gamma
+";
+        let updated = apply_unified_patch(original, patch).unwrap();
+        assert_eq!(updated, "alpha\ndelta\ngamma\n");
+    }
+
+    #[test]
+    fn applies_fenced_patch() {
+        let original = "a\nb\n";
+        let patch = "\
+```diff
+@@ -1,2 +1,2 @@
+ a
+-b
++c
+```";
+        let updated = apply_unified_patch(original, patch).unwrap();
+        assert_eq!(updated, "a\nc\n");
+    }
+
+    #[test]
+    fn applies_multiple_hunks() {
+        let original = "a\nb\nc\nd\ne\n";
+        let patch = "\
+@@ -1,2 +1,2 @@
+ a
+-b
++bb
+@@ -4,2 +4,2 @@
+ d
+-e
++ee
+";
+        let updated = apply_unified_patch(original, patch).unwrap();
+        assert_eq!(updated, "a\nbb\nc\nd\nee\n");
+    }
+
+    #[test]
+    fn relocates_hunk_when_line_numbers_drift() {
+        let original = "header\nalpha\nbeta\ngamma\n";
+        let patch = "\
+@@ -1,3 +1,3 @@
+ alpha
+-beta
++delta
+ gamma
+";
+        let updated = apply_unified_patch(original, patch).unwrap();
+        assert_eq!(updated, "header\nalpha\ndelta\ngamma\n");
+    }
+
+    #[test]
+    fn supports_no_newline_marker() {
+        let original = "alpha";
+        let patch = "\
+@@ -1 +1 @@
+-alpha
+\\ No newline at end of file
++beta
+\\ No newline at end of file
+";
+        let updated = apply_unified_patch(original, patch).unwrap();
+        assert_eq!(updated, "beta");
+    }
+
+    #[test]
+    fn rejects_ambiguous_hunk_matches() {
+        let original = "same\nsame\n";
+        let patch = "\
+@@ -1,1 +1,1 @@
+-same
++changed
+";
+        let error = apply_unified_patch(original, patch).unwrap_err();
+        assert!(error.contains("matched multiple locations"));
     }
 }

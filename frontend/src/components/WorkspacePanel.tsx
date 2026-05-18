@@ -1,4 +1,6 @@
 import { type CSSProperties, type ReactNode, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Braces,
   BriefcaseBusiness,
@@ -20,6 +22,7 @@ import {
   MoreHorizontal,
   Palette,
   Pencil,
+  Download,
   RefreshCw,
   RotateCcw,
   Save,
@@ -63,6 +66,7 @@ export interface WorkspaceState {
   activeFile: string | null;
   activeFileContent: string | null;
   previewPath?: string | null;
+  previewUrl?: string | null;
 }
 
 interface Props {
@@ -111,7 +115,8 @@ export default function WorkspacePanel({ workspace, onClose, embedded = false, w
     ?? (selectedFile && isPreviewable(selectedFile) ? selectedFile : null)
     ?? firstPreviewable
     ?? null;
-  const previewBlocked = !previewPath;
+  const previewUrl = workspace.previewUrl ?? null;
+  const previewBlocked = !previewUrl && !previewPath;
   const snapshot = selectedFile ? latestSnapshot(workspace.id, selectedFile) : null;
   const language = useMemo(() => languageForPath(selectedFile), [selectedFile]);
   const fileSize = useMemo(() => sizeForPath(liveFileTree, selectedFile), [liveFileTree, selectedFile]);
@@ -132,7 +137,10 @@ export default function WorkspacePanel({ workspace, onClose, embedded = false, w
       setSelectedFile(workspace.previewPath);
       setActiveTab("preview");
     }
-  }, [workspace.previewPath]);
+    if (workspace.previewUrl) {
+      setActiveTab("preview");
+    }
+  }, [workspace.previewPath, workspace.previewUrl]);
 
   // Reset view-mode whenever the user navigates to a different file.
   useEffect(() => {
@@ -235,9 +243,13 @@ export default function WorkspacePanel({ workspace, onClose, embedded = false, w
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFile, editorContent, isDirty, lastSavedContent]);
 
-  const previewSrc = previewPath
-    ? `/api/workspaces/${encodeURIComponent(workspace.id)}/preview?path=${encodeURIComponent(previewPath)}`
-    : null;
+  const previewSrc = previewUrl
+    ?? (previewPath
+      ? `/api/workspaces/${encodeURIComponent(workspace.id)}/preview?path=${encodeURIComponent(previewPath)}`
+      : null);
+  const previewLabel = previewPath ?? (previewUrl ? "running app" : null);
+  const previewKind = previewPath ? previewType(previewPath) : null;
+  const downloadUrl = `/api/workspaces/${encodeURIComponent(workspace.id)}/download`;
 
   const computedPanelStyle: CSSProperties = embedded
     ? {
@@ -287,6 +299,12 @@ export default function WorkspacePanel({ workspace, onClose, embedded = false, w
             }}
           >
             <RefreshCw size={14} strokeWidth={1.8} />
+          </ToolbarIconBtn>
+          <ToolbarIconBtn
+            title="Download workspace as ZIP"
+            onClick={() => window.open(downloadUrl, "_blank")}
+          >
+            <Download size={14} strokeWidth={1.8} />
           </ToolbarIconBtn>
           <ToolbarIconBtn
             title={previewSrc ? "Open preview in new tab" : "No previewable file in workspace"}
@@ -400,7 +418,7 @@ export default function WorkspacePanel({ workspace, onClose, embedded = false, w
               />
             )}
             {activeTab === "preview" && (
-              previewBlocked || !previewSrc || !previewPath ? (
+              previewBlocked || !previewSrc ? (
                 <PreviewEmpty
                   selectedFile={selectedFile}
                   onPickPreviewable={(path) => {
@@ -410,10 +428,12 @@ export default function WorkspacePanel({ workspace, onClose, embedded = false, w
                 />
               ) : (
                 <PreviewPane
-                  key={`${workspace.id}:${previewPath}:${lastSavedContent.length}:${savedTick}`}
+                  key={`${workspace.id}:${previewSrc}:${lastSavedContent.length}:${savedTick}`}
                   src={previewSrc}
                   workspaceId={workspace.id}
-                  path={previewPath}
+                  path={previewLabel ?? "running app"}
+                  kind={previewKind}
+                  markdownContent={previewKind === "markdown" ? editorContent : null}
                   fallbackHint={
                     selectedFile && selectedFile !== previewPath
                       ? `Showing ${previewPath} — '${selectedFile}' isn't a previewable file type.`
@@ -726,6 +746,8 @@ function PreviewPane({
   src,
   workspaceId,
   path,
+  kind,
+  markdownContent,
   fallbackHint,
   deviceSize,
   onDeviceChange,
@@ -735,6 +757,8 @@ function PreviewPane({
   src: string;
   workspaceId: string;
   path: string;
+  kind: "html" | "svg" | "markdown" | null;
+  markdownContent: string | null;
   fallbackHint: string | null;
   deviceSize: DeviceSize;
   onDeviceChange: (size: DeviceSize) => void;
@@ -772,16 +796,40 @@ function PreviewPane({
         </button>
       </div>
       <div style={previewStageStyle}>
-        <iframe
-          title="Workspace preview"
-          sandbox="allow-scripts allow-forms allow-modals"
-          src={src}
-          style={{
-            ...previewIframeStyle,
-            maxWidth: deviceWidth ?? "100%",
-            width: deviceWidth ? `${deviceWidth}px` : "100%",
-          }}
-        />
+        {kind === "markdown" ? (
+          <div
+            style={{
+              ...markdownPreviewFrameStyle,
+              maxWidth: deviceWidth ?? "100%",
+              width: deviceWidth ? `${deviceWidth}px` : "100%",
+            }}
+          >
+            <MarkdownPreview content={markdownContent ?? ""} />
+          </div>
+        ) : (
+          <iframe
+            title="Workspace preview"
+            sandbox="allow-scripts allow-forms allow-modals"
+            src={src}
+            style={{
+              ...previewIframeStyle,
+              maxWidth: deviceWidth ?? "100%",
+              width: deviceWidth ? `${deviceWidth}px` : "100%",
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MarkdownPreview({ content }: { content: string }) {
+  return (
+    <div className="workspace-scroll" style={markdownPreviewBodyStyle}>
+      <div style={markdownPreviewInnerStyle}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_PREVIEW_COMPONENTS}>
+          {content}
+        </ReactMarkdown>
       </div>
     </div>
   );
@@ -806,8 +854,8 @@ function PreviewEmpty({
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.42)", maxWidth: 360, textAlign: "center" }}>
         {selectedFile
-          ? `'${selectedFile}' isn't a previewable file. Preview works for .html, .htm, and .svg files.`
-          : "No previewable file selected. Preview works for .html, .htm, and .svg files."}
+          ? `'${selectedFile}' isn't a previewable file. Preview works for .html, .htm, .svg, and .md files.`
+          : "No previewable file selected. Preview works for .html, .htm, .svg, and .md files."}
       </div>
       {firstPreviewable && (
         <button
@@ -1125,7 +1173,14 @@ function firstEditableFile(entries: WorkspaceFile[]): string | null {
 }
 
 function isPreviewable(path: string) {
-  return /\.(html?|svg)$/i.test(path);
+  return previewType(path) !== null;
+}
+
+function previewType(path: string): "html" | "svg" | "markdown" | null {
+  if (/\.(md|markdown|mdx)$/i.test(path)) return "markdown";
+  if (/\.svg$/i.test(path)) return "svg";
+  if (/\.html?$/i.test(path)) return "html";
+  return null;
 }
 
 function findPreviewablePath(entries: WorkspaceFile[]): string | null {
@@ -1262,7 +1317,7 @@ function formatRelative(ts: number): string {
 export function parseWorkspaceToolResult(
   attrs: Record<string, string>,
   content: string,
-): { workspaceId: string; action: string; fileTree: WorkspaceFile[]; commandInfo: WorkspaceCommand | null; previewPath: string | null } | null {
+): { workspaceId: string; action: string; fileTree: WorkspaceFile[]; commandInfo: WorkspaceCommand | null; previewPath: string | null; previewUrl: string | null } | null {
   const workspaceId = attrs.workspace_id || "";
   const action = attrs.action || "";
   if (!workspaceId) return null;
@@ -1288,8 +1343,10 @@ export function parseWorkspaceToolResult(
   const previewPath = action === "Preview"
     ? content.match(/^Preview: (.+)$/m)?.[1]?.trim() ?? null
     : null;
+  const rawPreviewUrl = content.match(/^APP_PREVIEW_URL: (.+)$/m)?.[1]?.trim() ?? null;
+  const previewUrl = normalizeAppPreviewUrl(rawPreviewUrl, content);
 
-  return { workspaceId, action, fileTree, commandInfo, previewPath };
+  return { workspaceId, action, fileTree, commandInfo, previewPath, previewUrl };
 }
 
 export function applyWorkspaceUpdate(
@@ -1301,6 +1358,7 @@ export function applyWorkspaceUpdate(
   action: string,
   content: string,
   previewPath: string | null = null,
+  previewUrl: string | null = null,
 ): WorkspaceState {
   const base: WorkspaceState = current ?? {
     id: workspaceId,
@@ -1310,6 +1368,7 @@ export function applyWorkspaceUpdate(
     activeFile: null,
     activeFileContent: null,
     previewPath: null,
+    previewUrl: null,
   };
 
   const commands = commandInfo ? [...base.commands, commandInfo].slice(-50) : base.commands;
@@ -1332,8 +1391,61 @@ export function applyWorkspaceUpdate(
     activeFile,
     activeFileContent,
     previewPath: previewPath ?? base.previewPath,
+    previewUrl: previewUrl ?? base.previewUrl,
   };
 }
+
+function normalizeAppPreviewUrl(rawUrl: string | null, content: string): string | null {
+  if (rawUrl && !rawUrl.startsWith("/")) return rawUrl;
+  const port = content.match(/^PORT: (\d+)$/m)?.[1]
+    ?? rawUrl?.match(/\/port\/(\d+)\//)?.[1]
+    ?? null;
+  if (!port || typeof window === "undefined") return rawUrl;
+  return `http://${window.location.hostname}:${port}/`;
+}
+
+function MarkdownCodeBlock({ code, language }: { code: string; language?: string }) {
+  return (
+    <Suspense fallback={<pre style={markdownCodeBlockStyle}>{code}</pre>}>
+      <LazyHighlightedCodeBlock code={code} language={language} />
+    </Suspense>
+  );
+}
+
+const MARKDOWN_PREVIEW_COMPONENTS: Components = {
+  h1: ({ children }) => <h1 style={markdownH1Style}>{children}</h1>,
+  h2: ({ children }) => <h2 style={markdownH2Style}>{children}</h2>,
+  h3: ({ children }) => <h3 style={markdownH3Style}>{children}</h3>,
+  p: ({ children }) => <p style={markdownParagraphStyle}>{children}</p>,
+  ul: ({ children }) => <ul style={markdownListStyle}>{children}</ul>,
+  ol: ({ children }) => <ol style={markdownListStyle}>{children}</ol>,
+  li: ({ children }) => <li style={markdownListItemStyle}>{children}</li>,
+  hr: () => <hr style={markdownRuleStyle} />,
+  blockquote: ({ children }) => <blockquote style={markdownQuoteStyle}>{children}</blockquote>,
+  table: ({ children }) => (
+    <div style={markdownTableWrapStyle}>
+      <table style={markdownTableStyle}>{children}</table>
+    </div>
+  ),
+  thead: ({ children }) => <thead style={markdownTableHeadStyle}>{children}</thead>,
+  th: ({ children }) => <th style={markdownTableHeaderCellStyle}>{children}</th>,
+  td: ({ children }) => <td style={markdownTableCellStyle}>{children}</td>,
+  a: ({ children, href }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer" style={markdownLinkStyle}>
+      {children}
+    </a>
+  ),
+  strong: ({ children }) => <strong style={markdownStrongStyle}>{children}</strong>,
+  code: ({ children, className }) => {
+    const language = className?.replace(/^language-/, "");
+    const source = String(children).replace(/\n$/, "");
+    if (className?.startsWith("language-")) {
+      return <MarkdownCodeBlock code={source} language={language} />;
+    }
+    return <code style={markdownInlineCodeStyle}>{children}</code>;
+  },
+  pre: ({ children }) => <>{children}</>,
+};
 
 /* ─────────────────────────────────────────────────────────────────── */
 /*  Local keyframes (scrollbar, scoped fades)                           */
@@ -1891,6 +2003,162 @@ const previewIframeStyle: CSSProperties = {
   background: "white",
   borderRadius: 10,
   boxShadow: "0 20px 50px rgba(0,0,0,0.40), 0 0 0 1px rgba(255,255,255,0.06)",
+};
+
+// Frame is a fixed-height flex container so the body inside can own the
+// vertical scroll (overflowY: auto with min-height: 0). Without this the body
+// would just push past the bottom of the stage and the rounded card chrome
+// would look broken when the user scrolled.
+const markdownPreviewFrameStyle: CSSProperties = {
+  height: "100%",
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
+  background: "linear-gradient(180deg, rgba(18, 20, 22, 0.98) 0%, rgba(12, 14, 16, 0.98) 100%)",
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.06)",
+  borderTop: "1px solid rgba(255,255,255,0.10)",
+  boxShadow: "0 24px 60px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04)",
+  overflow: "hidden",
+};
+
+const markdownPreviewBodyStyle: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflowY: "auto",
+  overflowX: "hidden",
+  color: "rgba(255,255,255,0.88)",
+  fontFamily: FONT,
+  fontSize: 14,
+  lineHeight: 1.7,
+  background: [
+    "radial-gradient(circle at top right, rgba(245, 210, 120, 0.08), transparent 28%)",
+    "linear-gradient(180deg, rgba(255,255,255,0.02), transparent)",
+  ].join(", "),
+};
+
+const markdownPreviewInnerStyle: CSSProperties = {
+  maxWidth: 760,
+  margin: "0 auto",
+  padding: "36px 40px 48px",
+};
+
+const markdownH1Style: CSSProperties = {
+  margin: "0 0 16px",
+  fontSize: 30,
+  lineHeight: 1.15,
+  fontWeight: 700,
+  color: "rgba(255,255,255,0.98)",
+};
+
+const markdownH2Style: CSSProperties = {
+  margin: "28px 0 12px",
+  fontSize: 22,
+  lineHeight: 1.2,
+  fontWeight: 650,
+  color: "rgba(255,255,255,0.95)",
+};
+
+const markdownH3Style: CSSProperties = {
+  margin: "22px 0 10px",
+  fontSize: 17,
+  lineHeight: 1.3,
+  fontWeight: 600,
+  color: "rgba(255,255,255,0.92)",
+};
+
+const markdownParagraphStyle: CSSProperties = {
+  margin: "0 0 14px",
+  color: "rgba(255,255,255,0.84)",
+};
+
+const markdownListStyle: CSSProperties = {
+  margin: "0 0 16px 20px",
+  padding: 0,
+};
+
+const markdownListItemStyle: CSSProperties = {
+  margin: "0 0 6px",
+};
+
+const markdownRuleStyle: CSSProperties = {
+  border: "none",
+  borderTop: "1px solid rgba(255,255,255,0.10)",
+  margin: "24px 0",
+};
+
+const markdownQuoteStyle: CSSProperties = {
+  margin: "0 0 16px",
+  padding: "10px 14px",
+  borderLeft: "3px solid rgba(245, 210, 120, 0.55)",
+  background: "rgba(255,255,255,0.03)",
+  color: "rgba(255,255,255,0.76)",
+};
+
+const markdownTableWrapStyle: CSSProperties = {
+  overflowX: "auto",
+  margin: "0 0 18px",
+};
+
+const markdownTableStyle: CSSProperties = {
+  width: "100%",
+  borderCollapse: "collapse",
+  fontSize: 13,
+};
+
+const markdownTableHeadStyle: CSSProperties = {
+  background: "rgba(255,255,255,0.04)",
+};
+
+const markdownTableHeaderCellStyle: CSSProperties = {
+  textAlign: "left",
+  padding: "10px 12px",
+  border: "1px solid rgba(255,255,255,0.10)",
+  color: "rgba(255,255,255,0.95)",
+  fontWeight: 600,
+};
+
+const markdownTableCellStyle: CSSProperties = {
+  padding: "9px 12px",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "rgba(255,255,255,0.80)",
+  verticalAlign: "top",
+};
+
+const markdownLinkStyle: CSSProperties = {
+  color: "rgba(245, 210, 120, 0.96)",
+  textDecoration: "underline",
+  textDecorationColor: "rgba(245, 210, 120, 0.35)",
+  textUnderlineOffset: 3,
+};
+
+const markdownStrongStyle: CSSProperties = {
+  color: "rgba(255,255,255,0.96)",
+  fontWeight: 650,
+};
+
+const markdownInlineCodeStyle: CSSProperties = {
+  fontFamily: "'DM Mono', ui-monospace, monospace",
+  fontSize: "0.92em",
+  padding: "2px 6px",
+  borderRadius: 6,
+  background: "rgba(255,255,255,0.07)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "rgba(255,245,225,0.96)",
+  wordBreak: "break-word",
+};
+
+const markdownCodeBlockStyle: CSSProperties = {
+  margin: "0 0 18px",
+  padding: "14px 16px",
+  borderRadius: 10,
+  background: "rgba(0,0,0,0.34)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "rgba(255,255,255,0.88)",
+  fontFamily: "'DM Mono', ui-monospace, monospace",
+  fontSize: 12.5,
+  lineHeight: 1.6,
+  overflowX: "auto",
 };
 
 /* ── Terminal pane ─────────────────────────────────────────────────── */

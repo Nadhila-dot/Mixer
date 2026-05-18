@@ -1,6 +1,5 @@
 use crate::{
-    assets,
-    dev,
+    assets, dev,
     router::{Response, ResponseBody},
 };
 
@@ -91,7 +90,10 @@ pub async fn disk_file(url_path: &str, range: Option<&str>) -> Response {
             content_type: mime,
             body: ResponseBody::Fixed(chunk),
             extra_headers: vec![
-                ("Content-Range".into(), format!("bytes {start}-{end}/{total}")),
+                (
+                    "Content-Range".into(),
+                    format!("bytes {start}-{end}/{total}"),
+                ),
                 ("Accept-Ranges".into(), "bytes".into()),
             ],
         };

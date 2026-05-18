@@ -135,10 +135,25 @@ pub async fn dispatch(req: &Request) -> Response {
         ("GET", path) if is_asset(path) => pages::assets::asset(path).await,
 
         // JSON API
-        ("GET", "/api/stats")  => pages::api::stats().await,
+        ("GET", "/api/stats") => pages::api::stats().await,
         ("GET", "/api/health") => pages::api::health().await,
         ("GET", "/api/app-state") => auth::app_state(req).await,
         ("GET", "/api/models") => auth::models().await,
+        ("GET", path) if path.starts_with("/api/workspaces/") && path.contains("/port/") => {
+            let rest = path.trim_start_matches("/api/workspaces/");
+            let Some((workspace_id, port_and_tail)) = rest.split_once("/port/") else {
+                return Response::not_found();
+            };
+            let (port_text, tail) = port_and_tail
+                .split_once('/')
+                .map(|(port, tail)| (port, format!("/{tail}")))
+                .unwrap_or((port_and_tail, "/".to_string()));
+            let Ok(port) = port_text.parse::<u16>() else {
+                return Response::json(json!({ "ok": false, "error": "invalid port" }).to_string())
+                    .with_status(400);
+            };
+            pages::api::workspace_port_proxy(req, workspace_id, port, &tail).await
+        }
         ("GET", path) if path.starts_with("/api/workspaces/") && path.ends_with("/file") => {
             let workspace_id = path
                 .trim_start_matches("/api/workspaces/")
@@ -150,6 +165,12 @@ pub async fn dispatch(req: &Request) -> Response {
                 .trim_start_matches("/api/workspaces/")
                 .trim_end_matches("/file");
             pages::api::save_workspace_file(req, workspace_id).await
+        }
+        ("GET", path) if path.starts_with("/api/workspaces/") && path.ends_with("/download") => {
+            let workspace_id = path
+                .trim_start_matches("/api/workspaces/")
+                .trim_end_matches("/download");
+            pages::api::workspace_download(req, workspace_id).await
         }
         ("GET", path) if path.starts_with("/api/workspaces/") && path.ends_with("/preview") => {
             let workspace_id = path
@@ -191,12 +212,11 @@ pub async fn dispatch(req: &Request) -> Response {
             // For the streaming endpoints, GET isn't supported — surface 405
             // instead of pretending it's a chat fetch so the browser address
             // bar gives a useful error.
-            let is_stream_endpoint = chat_path.ends_with("/stream")
-                || chat_path.ends_with("/assistant-stream");
+            let is_stream_endpoint =
+                chat_path.ends_with("/stream") || chat_path.ends_with("/assistant-stream");
             if is_stream_endpoint {
                 return Response::json(
-                    json!({ "ok": false, "error": "use POST for streaming endpoints" })
-                        .to_string(),
+                    json!({ "ok": false, "error": "use POST for streaming endpoints" }).to_string(),
                 )
                 .with_status(405)
                 .with_header("Allow", "POST");
@@ -234,7 +254,7 @@ pub async fn dispatch(req: &Request) -> Response {
         ("DELETE", "/api/workspaces") => auth::delete_all_workspaces(req).await,
 
         // SSR page shells
-        ("GET", "/")           => pages::base::home(req).await,
+        ("GET", "/") => pages::base::home(req).await,
         ("GET", path) if path.starts_with("/chat/") => pages::base::home(req).await,
         ("GET", "/auth/screen") => pages::auth::screen(req).await,
 
@@ -265,13 +285,9 @@ fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~' => out.push(byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }

@@ -19,7 +19,13 @@ pub async fn screen(req: &Request) -> Response {
         "registerEndpoint": "/api/auth/register",
         "sessionEndpoint": "/api/auth/me",
     });
-    Response::html(inject(&shell(), SsrPayload { page: "auth-screen", data }))
+    Response::html(inject(
+        &shell(),
+        SsrPayload {
+            page: "auth-screen",
+            data,
+        },
+    ))
 }
 
 fn query_param(req: &Request, key: &str) -> Option<String> {

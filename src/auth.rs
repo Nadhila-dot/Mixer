@@ -2,8 +2,7 @@ use crate::{
     ai::{self, ChatTurn, StreamEvent},
     db::{self, DbError, User},
     router::{Request, Response, ResponseBody},
-    run,
-    tools,
+    run, tools,
 };
 use chrono::{Datelike, TimeZone, Utc};
 use serde::Deserialize;
@@ -145,10 +144,11 @@ pub async fn start_chat(req: &Request) -> Response {
         Ok(chat) => chat,
         Err(e) => return server_error(e),
     };
-    let user_message = match store.append_message(user.id, &uuid, "user", &prepared_message, now, None) {
-        Ok(message) => message,
-        Err(e) => return server_error(e),
-    };
+    let user_message =
+        match store.append_message(user.id, &uuid, "user", &prepared_message, now, None) {
+            Ok(message) => message,
+            Err(e) => return server_error(e),
+        };
 
     Response::json(
         json!({
@@ -196,10 +196,11 @@ pub async fn stream_new_chat(req: &Request) -> Response {
         Ok(chat) => chat,
         Err(e) => return server_error(e),
     };
-    let user_message = match store.append_message(user.id, &uuid, "user", &prepared_message, now, None) {
-        Ok(message) => message,
-        Err(e) => return server_error(e),
-    };
+    let user_message =
+        match store.append_message(user.id, &uuid, "user", &prepared_message, now, None) {
+            Ok(message) => message,
+            Err(e) => return server_error(e),
+        };
 
     stream_assistant_response(
         user.id,
@@ -246,7 +247,11 @@ pub async fn stream_existing_assistant(req: &Request, uuid: &str) -> Response {
         Err(e) => return server_error(e),
     };
     let messages = visible_messages(messages);
-    let Some(user_message) = messages.last().filter(|message| message.role == "user").cloned() else {
+    let Some(user_message) = messages
+        .last()
+        .filter(|message| message.role == "user")
+        .cloned()
+    else {
         return auth_error(409, "latest message already has an assistant response");
     };
 
@@ -370,10 +375,11 @@ pub async fn stream_chat_message(req: &Request, uuid: &str) -> Response {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let user_message = match store.append_message(user.id, uuid, "user", &prepared_message, now, None) {
-        Ok(message) => message,
-        Err(e) => return server_error(e),
-    };
+    let user_message =
+        match store.append_message(user.id, uuid, "user", &prepared_message, now, None) {
+            Ok(message) => message,
+            Err(e) => return server_error(e),
+        };
 
     let mut turns = previous_messages
         .into_iter()
@@ -417,35 +423,41 @@ pub fn websocket_chat_stream(
 
     let response = match input.action.as_str() {
         "create" => {
-            let message = input
-                .message
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default();
+            let message = input.message.as_deref().map(str::trim).unwrap_or_default();
             if message.is_empty() && input.attachments.is_empty() {
                 return Err((400, "message is required".to_string()));
             }
-            let prepared_message = prepare_user_message(message, &input.attachments)
-                .map_err(|error| (400, error))?;
+            let prepared_message =
+                prepare_user_message(message, &input.attachments).map_err(|error| (400, error))?;
             let display_message = display_message_for(message, &input.attachments);
-            stream_new_chat_for_user(&user, &input.chat_id, &display_message, &prepared_message, input.model)
+            stream_new_chat_for_user(
+                &user,
+                &input.chat_id,
+                &display_message,
+                &prepared_message,
+                input.model,
+            )
         }
         "send" => {
-            let message = input
-                .message
-                .as_deref()
-                .map(str::trim)
-                .unwrap_or_default();
+            let message = input.message.as_deref().map(str::trim).unwrap_or_default();
             if message.is_empty() && input.attachments.is_empty() {
                 return Err((400, "message is required".to_string()));
             }
-            let prepared_message = prepare_user_message(message, &input.attachments)
-                .map_err(|error| (400, error))?;
+            let prepared_message =
+                prepare_user_message(message, &input.attachments).map_err(|error| (400, error))?;
             let display_message = display_message_for(message, &input.attachments);
-            stream_chat_message_for_user(&user, &input.chat_id, &display_message, &prepared_message, input.model)
+            stream_chat_message_for_user(
+                &user,
+                &input.chat_id,
+                &display_message,
+                &prepared_message,
+                input.model,
+            )
         }
         "assistant" => stream_existing_assistant_for_user(&user, &input.chat_id, input.model),
-        "subscribe_run" => return subscribe_run_for_user(&user, input.run_id.as_deref(), input.after_seq),
+        "subscribe_run" => {
+            return subscribe_run_for_user(&user, input.run_id.as_deref(), input.after_seq)
+        }
         _ => return Err((400, "unknown websocket action".into())),
     };
 
@@ -582,7 +594,8 @@ fn stream_new_chat_for_user(
         Ok(chat) => chat,
         Err(e) => return server_error(e),
     };
-    let user_message = match store.append_message(user.id, uuid, "user", prompt_message, now, None) {
+    let user_message = match store.append_message(user.id, uuid, "user", prompt_message, now, None)
+    {
         Ok(msg) => msg,
         Err(e) => return server_error(e),
     };
@@ -592,7 +605,10 @@ fn stream_new_chat_for_user(
         uuid.to_string(),
         chat,
         user_message,
-        vec![ChatTurn { role: "user".into(), content: prompt_message.to_string() }],
+        vec![ChatTurn {
+            role: "user".into(),
+            content: prompt_message.to_string(),
+        }],
         model.unwrap_or_else(ai::default_model),
         updated_usage,
         limits,
@@ -625,7 +641,8 @@ fn stream_chat_message_for_user(
         Ok(value) => value,
         Err(response) => return response,
     };
-    let user_message = match store.append_message(user.id, uuid, "user", prompt_message, now, None) {
+    let user_message = match store.append_message(user.id, uuid, "user", prompt_message, now, None)
+    {
         Ok(message) => message,
         Err(e) => return server_error(e),
     };
@@ -673,7 +690,11 @@ fn stream_existing_assistant_for_user(user: &User, uuid: &str, model: Option<Str
         Err(e) => return server_error(e),
     };
     let messages = visible_messages(messages);
-    let Some(user_message) = messages.last().filter(|message| message.role == "user").cloned() else {
+    let Some(user_message) = messages
+        .last()
+        .filter(|message| message.role == "user")
+        .cloned()
+    else {
         return auth_error(409, "latest message already has an assistant response");
     };
 
@@ -705,7 +726,12 @@ fn stream_existing_assistant_for_user(user: &User, uuid: &str, model: Option<Str
 fn error_from_json_body(body: &[u8]) -> Option<String> {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()
-        .and_then(|value| value.get("error").and_then(|error| error.as_str()).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.as_str())
+                .map(str::to_string)
+        })
 }
 
 pub async fn list_runs_for_chat(req: &Request, chat_uuid: &str) -> Response {
@@ -762,11 +788,17 @@ pub async fn get_run(req: &Request, run_uuid: &str) -> Response {
         .and_then(|q| {
             q.split('&').find_map(|pair| {
                 let (k, v) = pair.split_once('=')?;
-                if k == "since" { v.parse().ok() } else { None }
+                if k == "since" {
+                    v.parse().ok()
+                } else {
+                    None
+                }
             })
         })
         .unwrap_or(0);
-    let events = store.events_for_run_since(&run.uuid, since).unwrap_or_default();
+    let events = store
+        .events_for_run_since(&run.uuid, since)
+        .unwrap_or_default();
     let tool_calls = store.tool_calls_for_run(&run.uuid).unwrap_or_default();
 
     Response::json(
@@ -862,8 +894,10 @@ pub async fn login(req: &Request) -> Response {
 
     match verify_login(&input.email, &input.password) {
         Ok(Some(user)) => match create_session(user.id) {
-            Ok(token) => Response::json(json!({ "ok": true, "user": user_json(&user) }).to_string())
-                .with_header("Set-Cookie", session_cookie(&token)),
+            Ok(token) => {
+                Response::json(json!({ "ok": true, "user": user_json(&user) }).to_string())
+                    .with_header("Set-Cookie", session_cookie(&token))
+            }
             Err(e) => server_error(e),
         },
         Ok(None) => auth_error(401, "invalid email or password"),
@@ -886,8 +920,10 @@ pub async fn register(req: &Request) -> Response {
 
     match create_user(name, &input.email, &input.password) {
         Ok(user) => match create_session(user.id) {
-            Ok(token) => Response::json(json!({ "ok": true, "user": user_json(&user) }).to_string())
-                .with_header("Set-Cookie", session_cookie(&token)),
+            Ok(token) => {
+                Response::json(json!({ "ok": true, "user": user_json(&user) }).to_string())
+                    .with_header("Set-Cookie", session_cookie(&token))
+            }
             Err(e) => server_error(e),
         },
         Err(DbError::DuplicateEmail) => auth_error(409, "email already registered"),
@@ -900,10 +936,8 @@ pub async fn logout(req: &Request) -> Response {
         let _ = db::auth_store().delete_session(&token);
     }
 
-    Response::json(json!({ "ok": true }).to_string()).with_header(
-        "Set-Cookie",
-        expired_session_cookie(),
-    )
+    Response::json(json!({ "ok": true }).to_string())
+        .with_header("Set-Cookie", expired_session_cookie())
 }
 
 pub async fn logout_redirect(req: &Request) -> Response {
@@ -997,7 +1031,11 @@ fn parse_auth_input(req: &Request) -> Result<AuthInput, &'static str> {
             }
         }
 
-        AuthInput { email, password, name }
+        AuthInput {
+            email,
+            password,
+            name,
+        }
     };
 
     input.email = input.email.trim().to_string();
@@ -1029,7 +1067,11 @@ fn parse_chat_input(req: &Request) -> Result<ChatInput, &'static str> {
             }
         }
 
-        Ok(ChatInput { message, model, attachments: Vec::new() })
+        Ok(ChatInput {
+            message,
+            model,
+            attachments: Vec::new(),
+        })
     }
 }
 
@@ -1089,7 +1131,9 @@ fn validate_attachments(attachments: &[ChatAttachmentInput]) -> Result<(), Strin
     const MAX_ATTACHMENTS: usize = 8;
     const MAX_TOTAL_CHARS: usize = 1_500_000;
     if attachments.len() > MAX_ATTACHMENTS {
-        return Err(format!("too many attachments; maximum is {MAX_ATTACHMENTS}"));
+        return Err(format!(
+            "too many attachments; maximum is {MAX_ATTACHMENTS}"
+        ));
     }
     let mut total = 0usize;
     for attachment in attachments {
@@ -1373,7 +1417,8 @@ fn stream_assistant_response(
             };
 
             let envelope: serde_json::Value = match serde_json::from_str(&envelope_str) {
-                Ok(v) => v, Err(_) => continue,
+                Ok(v) => v,
+                Err(_) => continue,
             };
             let seq = envelope.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
             if seq <= last_seq {
@@ -1392,7 +1437,10 @@ fn stream_assistant_response(
                     if let Some(t) = payload.get("final_text").and_then(|v| v.as_str()) {
                         final_text = Some(t.to_string());
                     }
-                    if let Some(msg_uuid) = payload.get("assistant_message_uuid").and_then(|v| v.as_str()) {
+                    if let Some(msg_uuid) = payload
+                        .get("assistant_message_uuid")
+                        .and_then(|v| v.as_str())
+                    {
                         if let Ok(msgs) = db::auth_store().chat_messages(user_id, &chat_uuid) {
                             assistant_message = msgs.into_iter().find(|m| m.uuid == msg_uuid);
                         }
@@ -1400,7 +1448,10 @@ fn stream_assistant_response(
                     break;
                 }
                 "run_failed" => {
-                    let err = payload.get("error").and_then(|v| v.as_str()).unwrap_or("run failed");
+                    let err = payload
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("run failed");
                     run_error = Some(err.to_string());
                     break;
                 }
@@ -1420,13 +1471,15 @@ fn stream_assistant_response(
         }
 
         let final_message = final_text
-            .or_else(|| run_error.clone().map(|e| {
-                if e == "Stopped by user" {
-                    "Stopped by user".to_string()
-                } else {
-                    format!("Run failed: {e}")
-                }
-            }))
+            .or_else(|| {
+                run_error.clone().map(|e| {
+                    if e == "Stopped by user" {
+                        "Stopped by user".to_string()
+                    } else {
+                        format!("Run failed: {e}")
+                    }
+                })
+            })
             .unwrap_or_default();
         let assistant_msg = if run_cancelled {
             None
@@ -1461,7 +1514,14 @@ fn persist_assistant_or_error(
     content: &str,
     model: &str,
 ) -> Option<db::ChatMessage> {
-    match db::auth_store().append_message(user_id, chat_uuid, "assistant", content, unix_secs() as i64, Some(model)) {
+    match db::auth_store().append_message(
+        user_id,
+        chat_uuid,
+        "assistant",
+        content,
+        unix_secs() as i64,
+        Some(model),
+    ) {
         Ok(message) => Some(message),
         Err(err) => {
             // Previously this used `.ok()` — DB write failures were silently
@@ -1480,38 +1540,32 @@ fn persist_assistant_or_error(
 fn reserve_usage(user: &User, message: &str) -> Result<(db::Usage, TierLimits, i64), Response> {
     let day = current_usage_day();
     let store = db::auth_store();
-    let usage = store
-        .usage_for_day(user.id, &day)
-        .map_err(server_error)?;
+    let usage = store.usage_for_day(user.id, &day).map_err(server_error)?;
     let limits = tier_limits(&user.tier);
     let estimated_tokens = estimate_tokens(message);
 
     if usage.messages >= limits.messages {
-        return Err(
-            Response::json(
-                json!({
-                    "ok": false,
-                    "error": "message limit reached",
-                    "resets_at": iso_from_unix(next_reset_unix()),
-                })
-                .to_string(),
-            )
-            .with_status(429),
-        );
+        return Err(Response::json(
+            json!({
+                "ok": false,
+                "error": "message limit reached",
+                "resets_at": iso_from_unix(next_reset_unix()),
+            })
+            .to_string(),
+        )
+        .with_status(429));
     }
 
     if usage.tokens + estimated_tokens > limits.tokens {
-        return Err(
-            Response::json(
-                json!({
-                    "ok": false,
-                    "error": "token limit reached",
-                    "resets_at": iso_from_unix(next_reset_unix()),
-                })
-                .to_string(),
-            )
-            .with_status(429),
-        );
+        return Err(Response::json(
+            json!({
+                "ok": false,
+                "error": "token limit reached",
+                "resets_at": iso_from_unix(next_reset_unix()),
+            })
+            .to_string(),
+        )
+        .with_status(429));
     }
 
     let now = unix_secs() as i64;

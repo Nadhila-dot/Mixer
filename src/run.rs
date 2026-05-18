@@ -6,6 +6,7 @@ use crate::{
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
+    hash::{Hash, Hasher},
     sync::{mpsc::Sender, Mutex, OnceLock},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -38,20 +39,18 @@ fn build_system_prompt(ctx: &RunContext, turns: &[ChatTurn]) -> String {
     let personalization = personalization_block(ctx.user_id);
     let workspaces = collect_chat_workspaces(ctx, turns);
     if workspaces.is_empty() {
-        return format!(
-            "{runtime}{personalization}{}",
-            crate::prompt::SYSTEM_PROMPT
-        );
+        return format!("{runtime}{personalization}{}", crate::prompt::SYSTEM_PROMPT);
     }
 
     let mut header = String::with_capacity(800);
     header.push_str("## ⚠️ ACTIVE WORKSPACES IN THIS CHAT — READ BEFORE ANY ACTION\n\n");
     header.push_str(
         "You have ALREADY created the following workspace(s) earlier in this conversation. \
-         DO NOT call <CreateWorkspace> again — doing so would spin up a fresh EMPTY workspace and \
-         silently lose every file you've already built. The user expects continuity on their existing project.\n\n",
+         If the current request is a follow-up on that project, DO NOT call <CreateWorkspace> again — doing so would spin up a fresh EMPTY workspace and \
+         silently lose every file you've already built. If the current request is unrelated research, a status check, writing, planning, or Q&A, ignore these workspace IDs and answer without workspace tools.\n\n",
     );
-    header.push_str("Existing workspace_id(s) in this chat (in creation order, most recent last):\n");
+    header
+        .push_str("Existing workspace_id(s) in this chat (in creation order, most recent last):\n");
     for (i, ws_id) in workspaces.iter().enumerate() {
         header.push_str(&format!("  {}. workspace_id=\"{}\"\n", i + 1, ws_id));
     }
@@ -59,14 +58,14 @@ fn build_system_prompt(ctx: &RunContext, turns: &[ChatTurn]) -> String {
     let default_ws = workspaces.last().expect("non-empty checked above");
     if workspaces.len() == 1 {
         header.push_str(&format!(
-            "\nFor the user's current request, pass exactly `id=\"{}\"` in every workspace tool call \
-             (CreateFile, AppendFile, PatchFile, ReadFile, Command, LongRunProcess, Preview, etc.).\n",
+            "\nFor follow-up work on this existing project, pass exactly `id=\"{}\"` in every workspace tool call \
+             (CreateFile, AppendFile, PatchFile, ReadFile, Command, LongRunProcess, Preview, etc.). For unrelated non-workspace tasks, do not call workspace tools.\n",
             default_ws
         ));
     } else {
         header.push_str(&format!(
-            "\nDefault to the most recent workspace: pass `id=\"{}\"` unless the user explicitly \
-             references one of the earlier ones by name or id.\n",
+            "\nFor follow-up project work, default to the most recent workspace: pass `id=\"{}\"` unless the user explicitly \
+             references one of the earlier ones by name or id. For unrelated non-workspace tasks, do not call workspace tools.\n",
             default_ws
         ));
     }
@@ -271,7 +270,9 @@ fn extract_workspace_ids(content: &str) -> Vec<String> {
     for needle in ["workspace_id=\"", "\"workspace_id\":\"", "workspace_id:"] {
         let mut cursor = 0usize;
         while cursor < content.len() {
-            let Some(rel) = content[cursor..].find(needle) else { break };
+            let Some(rel) = content[cursor..].find(needle) else {
+                break;
+            };
             let mut abs = cursor + rel + needle.len();
             while content[abs..].starts_with(' ') {
                 abs += 1;
@@ -310,7 +311,10 @@ fn existing_workspace_result(ctx: &RunContext, requested_name: &str) -> String {
             ),
         );
     }
-    tools::tool_result_xml("workspace", "No existing workspace was found for this chat.")
+    tools::tool_result_xml(
+        "workspace",
+        "No existing workspace was found for this chat.",
+    )
 }
 
 // ── Live event broadcast registry ────────────────────────────────────────────
@@ -392,7 +396,11 @@ pub fn cancel_run(user_id: i64, run_uuid: &str) -> Result<(), String> {
             Some(now),
         )
         .map_err(|e| e.to_string())?;
-    emit_run_event(&run.uuid, "run_cancelled", json!({ "reason": "Stopped by user" }));
+    emit_run_event(
+        &run.uuid,
+        "run_cancelled",
+        json!({ "reason": "Stopped by user" }),
+    );
     Ok(())
 }
 
@@ -431,7 +439,14 @@ pub fn spawn_run(
 
     let run_uuid_thread = run_uuid.clone();
     thread::spawn(move || {
-        execute_run(user_id, chat_uuid, run_uuid_thread, transcript, turns, model);
+        execute_run(
+            user_id,
+            chat_uuid,
+            run_uuid_thread,
+            transcript,
+            turns,
+            model,
+        );
     });
 
     run_uuid
@@ -451,11 +466,14 @@ fn execute_run(
 ) {
     let ctx = RunContext::new(run_uuid.clone(), user_id, chat_uuid.clone(), model.clone());
 
-    ctx.emit("run_started", json!({
-        "run_uuid": run_uuid,
-        "model": model,
-        "chat_uuid": chat_uuid,
-    }));
+    ctx.emit(
+        "run_started",
+        json!({
+            "run_uuid": run_uuid,
+            "model": model,
+            "chat_uuid": chat_uuid,
+        }),
+    );
     if ctx.is_cancelled() {
         return;
     }
@@ -526,17 +544,20 @@ fn execute_run(
                 }
 
                 // Loop detection
-                let history_key = format!("{}|{}", parsed.name, parsed.args_json);
+                let history_key = loop_history_key(&parsed);
                 let count = history_key_counts.entry(history_key.clone()).or_insert(0);
                 *count += 1;
                 if *count > LOOP_DETECT_THRESHOLD {
                     if ctx.is_cancelled() {
                         return;
                     }
-                    ctx.emit("run_failed", json!({
-                        "error": format!("Loop detected on tool '{}'", parsed.name),
-                        "tool": parsed.name,
-                    }));
+                    ctx.emit(
+                        "run_failed",
+                        json!({
+                            "error": format!("Loop detected on tool '{}'", parsed.name),
+                            "tool": parsed.name,
+                        }),
+                    );
                     finalize_failed(&ctx, &format!("Loop detected on tool '{}'", parsed.name));
                     return;
                 }
@@ -547,7 +568,12 @@ fn execute_run(
                     let call = make_tool_call(&run_uuid, tool_call_seq, &parsed, "failed", 1, None);
                     let _ = db::auth_store().insert_tool_call(&call);
                     let _ = db::auth_store().update_tool_call_status(
-                        &call.uuid, "failed", None, Some(&arg_err), Some(unix_secs()), Some(unix_secs()),
+                        &call.uuid,
+                        "failed",
+                        None,
+                        Some(&arg_err),
+                        Some(unix_secs()),
+                        Some(unix_secs()),
                     );
                     ctx.emit("tool_failed", json!({
                         "uuid": call.uuid, "name": call.name, "error": arg_err,
@@ -556,7 +582,15 @@ fn execute_run(
                     }));
                     tools::tool_result_xml(&parsed.name, &format!("Invalid args: {arg_err}"))
                 } else {
-                    execute_one_tool_with_retries(&ctx, &run_uuid, tool_call_seq, &parsed, &running_transcript, user_id, &model)
+                    execute_one_tool_with_retries(
+                        &ctx,
+                        &run_uuid,
+                        tool_call_seq,
+                        &parsed,
+                        &running_transcript,
+                        user_id,
+                        &model,
+                    )
                 };
                 if ctx.is_cancelled() {
                     return;
@@ -581,8 +615,7 @@ fn execute_run(
                 });
                 running_transcript.push_str(&format!(
                     "\nassistant: {}\nuser: tool_result\n{}",
-                    assistant_raw,
-                    tool_result_xml
+                    assistant_raw, tool_result_xml
                 ));
             }
         }
@@ -610,15 +643,26 @@ fn execute_run(
         return;
     }
     if final_to_save.trim().is_empty() || tools::looks_like_internal_action(&final_to_save) {
-        finalize_failed(&ctx, "Agent produced an internal action payload instead of a final answer");
+        finalize_failed(
+            &ctx,
+            "Agent produced an internal action payload instead of a final answer",
+        );
         return;
     }
     let now = unix_secs();
     let assistant_msg_uuid = match db::auth_store().append_message(
-        user_id, &chat_uuid, "assistant", &final_to_save, now, Some(&model),
+        user_id,
+        &chat_uuid,
+        "assistant",
+        &final_to_save,
+        now,
+        Some(&model),
     ) {
         Ok(m) => Some(m.uuid),
-        Err(e) => { eprintln!("[run/persist final] {e}"); None }
+        Err(e) => {
+            eprintln!("[run/persist final] {e}");
+            None
+        }
     };
 
     let _ = db::auth_store().update_run_status(
@@ -629,10 +673,13 @@ fn execute_run(
         assistant_msg_uuid.as_deref(),
         Some(now),
     );
-    ctx.emit("run_completed", json!({
-        "final_text": final_to_save,
-        "assistant_message_uuid": assistant_msg_uuid,
-    }));
+    ctx.emit(
+        "run_completed",
+        json!({
+            "final_text": final_to_save,
+            "assistant_message_uuid": assistant_msg_uuid,
+        }),
+    );
 }
 
 /// Find the first byte position from `from` that could be the start of an XML
@@ -708,11 +755,14 @@ fn decide_next_action(ctx: &RunContext, turns: &[ChatTurn]) -> Result<DecidedAct
             &system_prompt,
             repair_turns.clone(),
         )?;
-        ctx.emit("thinking_done", json!({
-            "attempt": attempt,
-            "duration_ms": thinking_started.elapsed().as_millis() as u64,
-            "had_think_block": raw.contains("<think>"),
-        }));
+        ctx.emit(
+            "thinking_done",
+            json!({
+                "attempt": attempt,
+                "duration_ms": thinking_started.elapsed().as_millis() as u64,
+                "had_think_block": raw.contains("<think>"),
+            }),
+        );
         if tools::has_incomplete_tool_call(&raw) {
             raw = complete_incomplete_tool_action(ctx, &repair_turns, raw);
         }
@@ -726,14 +776,20 @@ fn decide_next_action(ctx: &RunContext, turns: &[ChatTurn]) -> Result<DecidedAct
             }
             Ok(tools::AssistantAction::Tool(parsed)) => {
                 let assistant_raw = rebuild_tool_xml(&parsed);
-                return Ok(DecidedAction::Tool { parsed, assistant_raw });
+                return Ok(DecidedAction::Tool {
+                    parsed,
+                    assistant_raw,
+                });
             }
             Err(error) => {
-                ctx.emit("agent_parse_error", json!({
-                    "attempt": attempt,
-                    "error": error,
-                    "raw_preview": raw.chars().take(1200).collect::<String>(),
-                }));
+                ctx.emit(
+                    "agent_parse_error",
+                    json!({
+                        "attempt": attempt,
+                        "error": error,
+                        "raw_preview": raw.chars().take(1200).collect::<String>(),
+                    }),
+                );
                 repair_turns.push(ChatTurn {
                     role: "assistant".into(),
                     content: raw,
@@ -749,23 +805,30 @@ fn decide_next_action(ctx: &RunContext, turns: &[ChatTurn]) -> Result<DecidedAct
     Err("model failed to return a valid agent action".into())
 }
 
-fn complete_incomplete_tool_action(ctx: &RunContext, _turns: &[ChatTurn], mut raw: String) -> String {
+fn complete_incomplete_tool_action(
+    ctx: &RunContext,
+    _turns: &[ChatTurn],
+    mut raw: String,
+) -> String {
     for continuation in 1..=MAX_INCOMPLETE_RETRIES {
         if !tools::has_incomplete_tool_call(&raw) {
             break;
         }
 
         let state = continuation_state(&raw);
-        ctx.emit("agent_continuation", json!({
-            "attempt": continuation,
-            "tool": state.tool,
-            "path": state.path,
-            "missing_close": state.missing_close,
-            "raw_chars": raw.chars().count(),
-            "body_chars": state.body_chars,
-            "body_lines": state.body_lines,
-            "tail_preview": state.tail_preview,
-        }));
+        ctx.emit(
+            "agent_continuation",
+            json!({
+                "attempt": continuation,
+                "tool": state.tool,
+                "path": state.path,
+                "missing_close": state.missing_close,
+                "raw_chars": raw.chars().count(),
+                "body_chars": state.body_chars,
+                "body_lines": state.body_lines,
+                "tail_preview": state.tail_preview,
+            }),
+        );
 
         let mut fix_turns = Vec::new();
         fix_turns.push(ChatTurn {
@@ -786,13 +849,16 @@ fn complete_incomplete_tool_action(ctx: &RunContext, _turns: &[ChatTurn], mut ra
                 let raw_ext_chars = ext.chars().count();
                 let ext = sanitize_continuation_chunk(&ext);
                 if ext.trim().is_empty() {
-                    ctx.emit("agent_continuation_failed", json!({
-                        "attempt": continuation,
-                        "tool": state.tool,
-                        "path": state.path,
-                        "error": "model returned empty continuation after sanitization",
-                        "raw_delta_chars": raw_ext_chars,
-                    }));
+                    ctx.emit(
+                        "agent_continuation_failed",
+                        json!({
+                            "attempt": continuation,
+                            "tool": state.tool,
+                            "path": state.path,
+                            "error": "model returned empty continuation after sanitization",
+                            "raw_delta_chars": raw_ext_chars,
+                        }),
+                    );
                     break;
                 }
                 if looks_like_restarted_action(&ext) {
@@ -805,23 +871,29 @@ fn complete_incomplete_tool_action(ctx: &RunContext, _turns: &[ChatTurn], mut ra
                     }));
                     break;
                 }
-                ctx.emit("agent_continuation_delta", json!({
-                    "attempt": continuation,
-                    "tool": state.tool,
-                    "path": state.path,
-                    "delta_chars": ext.chars().count(),
-                    "raw_delta_chars": raw_ext_chars,
-                    "delta_preview": ext.chars().take(300).collect::<String>(),
-                }));
+                ctx.emit(
+                    "agent_continuation_delta",
+                    json!({
+                        "attempt": continuation,
+                        "tool": state.tool,
+                        "path": state.path,
+                        "delta_chars": ext.chars().count(),
+                        "raw_delta_chars": raw_ext_chars,
+                        "delta_preview": ext.chars().take(300).collect::<String>(),
+                    }),
+                );
                 raw.push_str(&ext);
             }
             Err(error) => {
-                ctx.emit("agent_continuation_failed", json!({
-                    "attempt": continuation,
-                    "tool": state.tool,
-                    "path": state.path,
-                    "error": error,
-                }));
+                ctx.emit(
+                    "agent_continuation_failed",
+                    json!({
+                        "attempt": continuation,
+                        "tool": state.tool,
+                        "path": state.path,
+                        "error": error,
+                    }),
+                );
                 break;
             }
         }
@@ -933,8 +1005,7 @@ fn sanitize_continuation_chunk(chunk: &str) -> String {
     }
     out.push_str(&chunk[cursor..]);
 
-    out
-        .trim_start_matches("```html")
+    out.trim_start_matches("```html")
         .trim_start_matches("```xml")
         .trim_start_matches("```")
         .trim_end_matches("```")
@@ -993,7 +1064,9 @@ fn stream_until_tool(ctx: &RunContext, turns: &[ChatTurn]) -> Result<StreamOutco
         }
         match event {
             StreamEvent::Delta(d) => {
-                if d.is_empty() { continue; }
+                if d.is_empty() {
+                    continue;
+                }
                 buf.push_str(&d);
 
                 // Check for a complete tool first.
@@ -1011,8 +1084,7 @@ fn stream_until_tool(ctx: &RunContext, turns: &[ChatTurn]) -> Result<StreamOutco
 
                 // No complete tool yet. Emit any text up to the first unparsed `<`
                 // (could be the start of a tool tag — withhold from there).
-                let safe_emit_end = first_potential_tag(&buf, emitted_up_to)
-                    .unwrap_or(buf.len());
+                let safe_emit_end = first_potential_tag(&buf, emitted_up_to).unwrap_or(buf.len());
                 if safe_emit_end > emitted_up_to {
                     let chunk = &buf[emitted_up_to..safe_emit_end];
                     if !chunk.is_empty() {
@@ -1052,7 +1124,8 @@ fn stream_until_tool(ctx: &RunContext, turns: &[ChatTurn]) -> Result<StreamOutco
                 role: "user".into(),
                 content: "Your response was cut off mid tool call. Continue from exactly \
                          where you stopped — output ONLY the remaining content and closing tag. \
-                         No repeated content, no commentary.".into(),
+                         No repeated content, no commentary."
+                    .into(),
             });
             let fix_system_prompt = build_system_prompt(ctx, &fix_turns);
             match ai::complete_chat_with_system_prompt(
@@ -1079,7 +1152,11 @@ fn stream_until_tool(ctx: &RunContext, turns: &[ChatTurn]) -> Result<StreamOutco
             full_text: buf,
         })
     } else {
-        Ok(StreamOutcome { text_before: String::new(), tool_call: None, full_text: buf })
+        Ok(StreamOutcome {
+            text_before: String::new(),
+            tool_call: None,
+            full_text: buf,
+        })
     }
 }
 
@@ -1103,7 +1180,11 @@ fn execute_one_tool_with_retries(
         if ctx.is_cancelled() {
             return tools::tool_result_xml(&parsed.name, "Run cancelled by user.");
         }
-        let current_uuid = if attempt == 1 { original_uuid.clone() } else { uuid_v4() };
+        let current_uuid = if attempt == 1 {
+            original_uuid.clone()
+        } else {
+            uuid_v4()
+        };
 
         let call = ToolCall {
             uuid: current_uuid.clone(),
@@ -1121,43 +1202,62 @@ fn execute_one_tool_with_retries(
             ended_at: None,
         };
         let _ = db::auth_store().insert_tool_call(&call);
-        ctx.emit("tool_pending", json!({
-            "uuid": current_uuid, "seq": seq, "name": call.name,
-            "args": serde_json::from_str::<Value>(&call.args_json).unwrap_or(Value::Null),
-            "attempt": attempt,
-            "parent_uuid": parent_uuid,
-        }));
+        ctx.emit(
+            "tool_pending",
+            json!({
+                "uuid": current_uuid, "seq": seq, "name": call.name,
+                "args": serde_json::from_str::<Value>(&call.args_json).unwrap_or(Value::Null),
+                "attempt": attempt,
+                "parent_uuid": parent_uuid,
+            }),
+        );
 
         let started = unix_secs();
         let _ = db::auth_store().update_tool_call_status(
-            &current_uuid, "running", None, None, Some(started), None,
+            &current_uuid,
+            "running",
+            None,
+            None,
+            Some(started),
+            None,
         );
-        ctx.emit("tool_running", json!({ "uuid": current_uuid, "name": call.name }));
+        ctx.emit(
+            "tool_running",
+            json!({ "uuid": current_uuid, "name": call.name }),
+        );
 
-        let result_xml = if parsed.name == "CreateWorkspace" && latest_persisted_workspace(ctx).is_some() {
-            existing_workspace_result(
-                ctx,
-                parsed.attrs.get("id").map(String::as_str).unwrap_or(parsed.body.as_str()),
-            )
-        } else {
-            tools::execute_tool_owned_with_events(
-                &parsed.name,
-                &parsed.attrs,
-                &parsed.body,
-                transcript,
-                model,
-                user_id,
-                |event| match event {
-                    tools::ToolExecutionEvent::OutputChunk(chunk) => {
-                        ctx.emit("tool_output", json!({
-                            "uuid": current_uuid,
-                            "name": call.name,
-                            "chunk": tools::redact_sensitive(&chunk),
-                        }));
-                    }
-                },
-            )
-        };
+        let result_xml =
+            if parsed.name == "CreateWorkspace" && latest_persisted_workspace(ctx).is_some() {
+                existing_workspace_result(
+                    ctx,
+                    parsed
+                        .attrs
+                        .get("id")
+                        .map(String::as_str)
+                        .unwrap_or(parsed.body.as_str()),
+                )
+            } else {
+                tools::execute_tool_owned_with_events(
+                    &parsed.name,
+                    &parsed.attrs,
+                    &parsed.body,
+                    transcript,
+                    model,
+                    user_id,
+                    |event| match event {
+                        tools::ToolExecutionEvent::OutputChunk(chunk) => {
+                            ctx.emit(
+                                "tool_output",
+                                json!({
+                                    "uuid": current_uuid,
+                                    "name": call.name,
+                                    "chunk": tools::redact_sensitive(&chunk),
+                                }),
+                            );
+                        }
+                    },
+                )
+            };
         let ended = unix_secs();
         if ctx.is_cancelled() {
             let _ = db::auth_store().update_tool_call_status(
@@ -1168,11 +1268,14 @@ fn execute_one_tool_with_retries(
                 Some(started),
                 Some(ended),
             );
-            ctx.emit("tool_failed", json!({
-                "uuid": current_uuid, "name": call.name,
-                "error": "Run cancelled by user",
-                "attempt": attempt,
-            }));
+            ctx.emit(
+                "tool_failed",
+                json!({
+                    "uuid": current_uuid, "name": call.name,
+                    "error": "Run cancelled by user",
+                    "attempt": attempt,
+                }),
+            );
             return tools::tool_result_xml(&parsed.name, "Run cancelled by user.");
         }
 
@@ -1187,29 +1290,38 @@ fn execute_one_tool_with_retries(
         );
 
         if status == "succeeded" {
-            ctx.emit("tool_succeeded", json!({
-                "uuid": current_uuid, "name": call.name,
-                "output": output.clone().unwrap_or_default(),
-                "result_xml": result_xml,
-            }));
+            ctx.emit(
+                "tool_succeeded",
+                json!({
+                    "uuid": current_uuid, "name": call.name,
+                    "output": output.clone().unwrap_or_default(),
+                    "result_xml": result_xml,
+                }),
+            );
             return result_xml;
         }
 
         if status == "approval_required" {
-            ctx.emit("tool_approval_required", json!({
-                "uuid": current_uuid, "name": call.name,
-                "reason": error.clone().unwrap_or_else(|| "approval required".to_string()),
-                "output": output.clone().unwrap_or_default(),
-                "result_xml": result_xml,
-            }));
+            ctx.emit(
+                "tool_approval_required",
+                json!({
+                    "uuid": current_uuid, "name": call.name,
+                    "reason": error.clone().unwrap_or_else(|| "approval required".to_string()),
+                    "output": output.clone().unwrap_or_default(),
+                    "result_xml": result_xml,
+                }),
+            );
             return result_xml;
         }
 
-        ctx.emit("tool_failed", json!({
-            "uuid": current_uuid, "name": call.name,
-            "error": error.clone().unwrap_or_default(),
-            "attempt": attempt,
-        }));
+        ctx.emit(
+            "tool_failed",
+            json!({
+                "uuid": current_uuid, "name": call.name,
+                "error": error.clone().unwrap_or_default(),
+                "attempt": attempt,
+            }),
+        );
         last_result_xml = result_xml;
 
         if should_not_retry_tool_failure(&parsed.name, error.as_deref()) {
@@ -1221,10 +1333,13 @@ fn execute_one_tool_with_retries(
         }
 
         let delay_ms = 1000u64 << (attempt as u32 - 1);
-        ctx.emit("tool_retrying", json!({
-            "original_uuid": original_uuid, "attempt_next": attempt + 1,
-            "delay_ms": delay_ms,
-        }));
+        ctx.emit(
+            "tool_retrying",
+            json!({
+                "original_uuid": original_uuid, "attempt_next": attempt + 1,
+                "delay_ms": delay_ms,
+            }),
+        );
         let sleep_started = Instant::now();
         while sleep_started.elapsed() < Duration::from_millis(delay_ms) {
             if ctx.is_cancelled() {
@@ -1253,6 +1368,13 @@ fn finalize_failed(ctx: &RunContext, error_summary: &str) {
     ctx.emit("run_failed", json!({ "error": error_summary }));
 }
 
+fn loop_history_key(tool: &tools::ParsedToolOwned) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tool.body.trim().hash(&mut hasher);
+    let body_hash = hasher.finish();
+    format!("{}|{}|body:{body_hash:016x}", tool.name, tool.args_json)
+}
+
 // ── Streaming helpers ────────────────────────────────────────────────────────
 
 fn stream_llm(ctx: &RunContext, turns: &[ChatTurn]) -> Result<String, String> {
@@ -1276,18 +1398,39 @@ fn stream_llm(ctx: &RunContext, turns: &[ChatTurn]) -> Result<String, String> {
 fn validate_args(tool: &tools::ParsedToolOwned) -> Result<(), String> {
     let need_id = matches!(
         tool.name.as_str(),
-        "WorkspaceStatus" | "Command" | "LongRunProcess"
-            | "CreateFile" | "AppendFile" | "PatchFile" | "ReadFile" | "DeleteFile" | "Preview"
-            | "CreateDirectory" | "DeleteDirectory"
+        "WorkspaceStatus"
+            | "Command"
+            | "LongRunProcess"
+            | "CreateFile"
+            | "AppendFile"
+            | "PatchFile"
+            | "ReadFile"
+            | "DeleteFile"
+            | "Preview"
+            | "CreateDirectory"
+            | "DeleteDirectory"
     );
     if need_id {
-        let id = tool.attrs.get("id").map(String::as_str).unwrap_or("").trim();
+        let id = tool
+            .attrs
+            .get("id")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
         if id.is_empty() {
             return Err(format!("Tool '{}' requires id attribute", tool.name));
         }
     }
-    if matches!(tool.name.as_str(), "CreateFile" | "AppendFile" | "PatchFile" | "ReadFile" | "DeleteFile" | "Preview") {
-        let path = tool.attrs.get("path").map(String::as_str).unwrap_or("").trim();
+    if matches!(
+        tool.name.as_str(),
+        "CreateFile" | "AppendFile" | "PatchFile" | "ReadFile" | "DeleteFile" | "Preview"
+    ) {
+        let path = tool
+            .attrs
+            .get("path")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
         if path.is_empty() {
             return Err(format!("Tool '{}' requires path attribute", tool.name));
         }
@@ -1309,7 +1452,9 @@ fn validate_args(tool: &tools::ParsedToolOwned) -> Result<(), String> {
 
 fn classify_tool_result(name: &str, xml: &str) -> (&'static str, Option<String>, Option<String>) {
     // Tools that produce a <tool_result> block — we look at the body.
-    let body = tools::decode_xml_entities(&extract_tool_result_body(xml).unwrap_or_else(|| xml.to_string()));
+    let body = tools::decode_xml_entities(
+        &extract_tool_result_body(xml).unwrap_or_else(|| xml.to_string()),
+    );
     let body_lower = body.to_lowercase();
     if body_lower.starts_with("approval required:") {
         return ("approval_required", Some(body.clone()), Some(body));
@@ -1333,8 +1478,7 @@ fn classify_tool_result(name: &str, xml: &str) -> (&'static str, Option<String>,
             | "CreateDirectory"
             | "DeleteDirectory"
     ) {
-        body_lower.starts_with("workspace ")
-            && body_lower.contains(" not found")
+        body_lower.starts_with("workspace ") && body_lower.contains(" not found")
             || body_lower.starts_with("database error:")
             || body_lower.starts_with("no workspace id provided")
             || body_lower.starts_with("failed to create workspace:")
@@ -1362,7 +1506,9 @@ fn extract_tool_result_body(xml: &str) -> Option<String> {
     let start = xml.find('>')?;
     let end_marker = "</tool_result>";
     let end = xml.rfind(end_marker)?;
-    if end <= start { return None; }
+    if end <= start {
+        return None;
+    }
     Some(xml[start + 1..end].to_string())
 }
 
@@ -1445,12 +1591,19 @@ struct RunContext {
 
 impl RunContext {
     fn new(run_uuid: String, user_id: i64, chat_uuid: String, model: String) -> Self {
-        Self { run_uuid, user_id, chat_uuid, model }
+        Self {
+            run_uuid,
+            user_id,
+            chat_uuid,
+            model,
+        }
     }
 
     fn emit(&self, event_type: &str, payload: Value) {
         emit_run_event(&self.run_uuid, event_type, payload);
-        let _ = self.user_id; let _ = &self.chat_uuid; let _ = &self.model; // suppress unused
+        let _ = self.user_id;
+        let _ = &self.chat_uuid;
+        let _ = &self.model; // suppress unused
     }
 
     fn is_cancelled(&self) -> bool {

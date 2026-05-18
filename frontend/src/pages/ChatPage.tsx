@@ -1,5 +1,6 @@
 import React, {
   type CSSProperties,
+  type ClipboardEvent,
   type KeyboardEvent,
   type ReactNode,
   Suspense,
@@ -301,6 +302,8 @@ export default function ChatPage() {
 
     setMessages([]);
     setError(null);
+    setWorkspaceState(null);
+    setWorkspacePanelOpen(false);
     setIsLoadingChat(true);
     stopStreamRef.current?.();
     stopStreamRef.current = null;
@@ -334,6 +337,12 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
+    if (!id) {
+      setWorkspaceState(null);
+      setWorkspacePanelOpen(false);
+      return;
+    }
+
     let ws: WorkspaceState | null = null;
     for (const msg of messages) {
       if (msg.role !== "assistant") continue;
@@ -348,6 +357,7 @@ export default function ChatPage() {
             null,
             "WorkspaceStatus",
             "",
+            null,
             null,
           );
         }
@@ -380,6 +390,7 @@ export default function ChatPage() {
             parsed.action,
             source.content,
             parsed.previewPath,
+            parsed.previewUrl,
           );
         }
       }
@@ -404,9 +415,13 @@ export default function ChatPage() {
           activeFile: null,
           activeFileContent: null,
           previewPath: null,
+          previewUrl: null,
         });
+        return;
       }
     }
+    setWorkspaceState(null);
+    setWorkspacePanelOpen(false);
   }, [messages, id]);
 
   useEffect(() => {
@@ -832,8 +847,8 @@ export default function ChatPage() {
     );
   }
 
-  async function handleAttachmentInput(files: FileList | null) {
-    if (!files || files.length === 0) return;
+  async function addAttachmentFiles(files: File[]) {
+    if (files.length === 0) return;
     setError(null);
     try {
       const existing = attachments.length;
@@ -842,15 +857,32 @@ export default function ChatPage() {
         setError(`You can attach up to ${MAX_ATTACHMENTS} files per message.`);
         return;
       }
-      const selected = Array.from(files).slice(0, slots);
+      const selected = files.slice(0, slots);
       const next = await Promise.all(selected.map(readAttachmentFile));
       setAttachments((current) => [...current, ...next].slice(0, MAX_ATTACHMENTS));
+      if (files.length > slots) {
+        setError(`Attached ${slots} file${slots === 1 ? "" : "s"}. You can attach up to ${MAX_ATTACHMENTS} files per message.`);
+      }
       textareaRef.current?.focus();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not attach file");
+    }
+  }
+
+  async function handleAttachmentInput(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    try {
+      await addAttachmentFiles(Array.from(files));
     } finally {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  }
+
+  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const pastedFiles = filesFromClipboard(event.clipboardData);
+    if (pastedFiles.length === 0) return;
+    event.preventDefault();
+    void addAttachmentFiles(pastedFiles);
   }
 
   function removeAttachment(id: string) {
@@ -1185,6 +1217,7 @@ export default function ChatPage() {
                   value={text}
                   onChange={(e) => setText(e.target.value)}
                   onKeyDown={handleKey}
+                  onPaste={handlePaste}
                   placeholder="Ask anything, or start a new thread..."
                   rows={2}
                   disabled={remainingMessages === 0}
@@ -1394,6 +1427,7 @@ export default function ChatPage() {
                     value={text}
                     onChange={(e) => setText(e.target.value)}
                     onKeyDown={handleKey}
+                    onPaste={handlePaste}
                     placeholder="Reply to the conversation..."
                     rows={2}
                     style={{
@@ -1634,6 +1668,54 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onload = () => resolve(String(reader.result ?? ""));
     reader.readAsDataURL(file);
   });
+}
+
+function filesFromClipboard(data: DataTransfer): File[] {
+  const byKey = new Map<string, File>();
+  const add = (file: File, index: number) => {
+    const normalized = normalizePastedFile(file, index);
+    const key = `${normalized.name}:${normalized.type}:${normalized.size}:${normalized.lastModified}`;
+    byKey.set(key, normalized);
+  };
+
+  Array.from(data.files ?? []).forEach(add);
+  Array.from(data.items ?? []).forEach((item, index) => {
+    if (item.kind !== "file") return;
+    const file = item.getAsFile();
+    if (file) add(file, index);
+  });
+
+  return Array.from(byKey.values()).filter(isSupportedAttachmentFile);
+}
+
+function normalizePastedFile(file: File, index: number): File {
+  if (file.name && file.name.trim() && file.name !== "image.png") return file;
+  const ext = extensionForMime(file.type) ?? "bin";
+  const prefix = file.type.startsWith("image/") ? "pasted-image" : "pasted-file";
+  return new File([file], `${prefix}-${Date.now()}-${index + 1}.${ext}`, {
+    type: file.type || "application/octet-stream",
+    lastModified: file.lastModified || Date.now(),
+  });
+}
+
+function extensionForMime(mime: string): string | null {
+  const normalized = mime.toLowerCase();
+  if (normalized === "image/png") return "png";
+  if (normalized === "image/jpeg") return "jpg";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/gif") return "gif";
+  if (normalized === "image/svg+xml") return "svg";
+  if (normalized === "application/pdf") return "pdf";
+  if (normalized === "text/plain") return "txt";
+  if (normalized === "text/html") return "html";
+  if (normalized === "text/markdown") return "md";
+  if (normalized === "application/json") return "json";
+  return null;
+}
+
+function isSupportedAttachmentFile(file: File): boolean {
+  if (file.size <= 0) return false;
+  return true;
 }
 
 function isTextLikeFile(file: File) {
