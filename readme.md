@@ -1,6 +1,6 @@
 # Mixer — Enterprise Agentic Workspace on Vultr
 
-> Mixer is a Vultr-hosted AI workspace that turns enterprise tasks into visible, recoverable agent workflows. Unlike a normal chat UI, Mixer can plan multi-step work, create and edit files, run commands inside a workspace, recover from failed tool calls, and stream progress back to the user in real time.
+> Mixer is a Vultr-hosted AI workspace that turns enterprise tasks into visible, recoverable agent workflows. Unlike a normal chat UI, Mixer can connect to your vultr account and manage your infrastructure, internal tooling, and operational automation — all while showing you exactly what it's doing, why, and how. It's like having an AI co-worker who can actually do work, not just chat about it.
 
 > [!NOTE]
 > Built for the **Milan AI Week Hackathon**, Mixer demonstrates how **Vultr Serverless Inference** and **Vultr Compute** can power a practical enterprise AI agent for infrastructure, internal tooling, and operational automation.
