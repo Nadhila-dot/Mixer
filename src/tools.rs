@@ -207,6 +207,7 @@ pub fn executable_tool_names(raw: &str) -> Vec<String> {
                     | "VultrListOs"
                     | "VultrListSshKeys"
                     | "VultrImportSshKey"
+                    | "VultrSaveAccess"
                     | "VultrCheckAccess"
                     | "RemoteCommand"
             )
@@ -739,6 +740,9 @@ fn infer_tool_name(
     if has("instance_id") && has("command") {
         return "RemoteCommand".into();
     }
+    if has("instance_id") && (has("password") || has("private_key")) {
+        return "VultrSaveAccess".into();
+    }
     if has("instance_id") && has("action") {
         return "VultrPowerAction".into();
     }
@@ -925,6 +929,7 @@ fn is_supported_tool(name: &str) -> bool {
             | "VultrListOs"
             | "VultrListSshKeys"
             | "VultrImportSshKey"
+            | "VultrSaveAccess"
             | "VultrCheckAccess"
             | "RemoteCommand"
     )
@@ -1113,6 +1118,7 @@ where
                 .unwrap_or(body.trim());
             vultr_import_ssh_key(user_id, name, public_key)
         }
+        "VultrSaveAccess" => vultr_save_access(user_id, &attrs),
         "VultrCheckAccess" => {
             let instance_id = attrs
                 .get("instance_id")
@@ -1715,6 +1721,51 @@ fn vultr_import_ssh_key(user_id: i64, name: &str, public_key: &str) -> String {
             &format!("Imported SSH key {} ({})", entry.label, entry.id),
         ),
         Err(error) => vultr_tool_result("VultrImportSshKey", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_save_access(user_id: i64, attrs: &HashMap<String, String>) -> String {
+    let input = crate::vultr::SaveAccessToolInput {
+        instance_id: attrs
+            .get("instance_id")
+            .or_else(|| attrs.get("id"))
+            .cloned()
+            .unwrap_or_default(),
+        host: attrs.get("host").cloned(),
+        username: attrs.get("username").cloned(),
+        port: attrs.get("port").and_then(|value| value.parse::<i64>().ok()),
+        auth_mode: attrs
+            .get("auth_mode")
+            .cloned()
+            .unwrap_or_else(|| {
+                if attrs.contains_key("private_key") {
+                    "ssh_key".to_string()
+                } else {
+                    "password".to_string()
+                }
+            }),
+        password: attrs.get("password").cloned(),
+        private_key: attrs.get("private_key").cloned(),
+        public_key: attrs.get("public_key").cloned(),
+        verify: attrs
+            .get("verify")
+            .map(|value| matches!(value.as_str(), "true" | "1" | "yes"))
+            .unwrap_or(false),
+    };
+    match crate::vultr::tool_save_access(user_id, input) {
+        Ok(profile) => vultr_tool_result(
+            "VultrSaveAccess",
+            &format!(
+                "Saved access for {}\nHost: {}:{}\nUser: {}\nAuth: {}\nState: {}",
+                profile.instance_id,
+                profile.host,
+                profile.port,
+                profile.username,
+                profile.auth_mode,
+                profile.ssh_state,
+            ),
+        ),
+        Err(error) => vultr_tool_result("VultrSaveAccess", &crate::vultr::format_tool_error(error)),
     }
 }
 

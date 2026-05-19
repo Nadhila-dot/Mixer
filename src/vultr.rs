@@ -869,6 +869,18 @@ fn load_profile(user_id: i64, instance_id: &str) -> Result<InstanceAccessProfile
         })
 }
 
+fn infer_host_for_instance(user_id: i64, instance_id: &str) -> Result<String, VultrError> {
+    let (_account, api_key) = ensure_connected_account(user_id)?;
+    let detail = get_instance_api(&api_key, instance_id, None)?;
+    let host = detail.main_ip.trim();
+    if host.is_empty() {
+        return Err(VultrError::InvalidInput(format!(
+            "Instance '{instance_id}' does not have a public IP yet."
+        )));
+    }
+    Ok(host.to_string())
+}
+
 fn sshpass_available() -> bool {
     Command::new("sshpass")
         .arg("-V")
@@ -1541,6 +1553,127 @@ pub(crate) fn tool_check_access(
     };
     save_verified_profile(user_id, updated.clone())?;
     Ok(profile_view(&updated))
+}
+
+pub(crate) struct SaveAccessToolInput {
+    pub instance_id: String,
+    pub host: Option<String>,
+    pub username: Option<String>,
+    pub port: Option<i64>,
+    pub auth_mode: String,
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+    pub public_key: Option<String>,
+    pub verify: bool,
+}
+
+pub(crate) fn tool_save_access(
+    user_id: i64,
+    input: SaveAccessToolInput,
+) -> Result<InstanceAccessProfileView, VultrError> {
+    if input.instance_id.trim().is_empty() {
+        return Err(VultrError::InvalidInput(
+            "instance_id is required".into(),
+        ));
+    }
+    if input.auth_mode != "password" && input.auth_mode != "ssh_key" {
+        return Err(VultrError::InvalidInput(
+            "auth_mode must be password or ssh_key".into(),
+        ));
+    }
+
+    let existing = db::auth_store()
+        .get_instance_access_profile(user_id, input.instance_id.trim())
+        .map_err(|e| VultrError::Api(e.to_string()))?;
+    let now = unix_secs();
+    let requested_auth_mode = input.auth_mode.as_str();
+    let host = input
+        .host
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or(infer_host_for_instance(user_id, input.instance_id.trim())?);
+    let username = input
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(default_ssh_username);
+    let port = input.port.unwrap_or(22).max(1);
+
+    let secret_plain = if requested_auth_mode == "password" {
+        if let Some(password) = input.password.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            password.to_string()
+        } else if let Some(profile) = &existing {
+            if profile.auth_mode != requested_auth_mode {
+                return Err(VultrError::InvalidInput(
+                    "password is required when switching to password auth".into(),
+                ));
+            }
+            decrypt_secret(&profile.encrypted_secret)?
+        } else {
+            return Err(VultrError::InvalidInput(
+                "password is required for password auth".into(),
+            ));
+        }
+    } else if let Some(private_key) = input.private_key.as_deref().filter(|value| !value.trim().is_empty()) {
+        private_key.to_string()
+    } else if let Some(profile) = &existing {
+        if profile.auth_mode != requested_auth_mode {
+            return Err(VultrError::InvalidInput(
+                "private_key is required when switching to ssh_key auth".into(),
+            ));
+        }
+        decrypt_secret(&profile.encrypted_secret)?
+    } else {
+        return Err(VultrError::InvalidInput(
+            "private_key is required for ssh_key auth".into(),
+        ));
+    };
+
+    let mut profile = InstanceAccessProfile {
+        instance_id: input.instance_id.trim().to_string(),
+        instance_label: existing
+            .as_ref()
+            .map(|profile| profile.instance_label.clone())
+            .unwrap_or_default(),
+        host,
+        port,
+        username,
+        auth_mode: requested_auth_mode.to_string(),
+        encrypted_secret: encrypt_secret(&secret_plain)?,
+        public_key: input.public_key.unwrap_or_default(),
+        last_verified_at: existing.as_ref().and_then(|profile| profile.last_verified_at),
+        last_error: existing.as_ref().and_then(|profile| profile.last_error.clone()),
+        created_at: existing.as_ref().map(|profile| profile.created_at).unwrap_or(now),
+        updated_at: now,
+    };
+
+    save_verified_profile(user_id, profile.clone())?;
+
+    if input.verify {
+        match run_remote_command_internal(&profile, "echo mixer-ssh-ok", 20) {
+            Ok(result) => {
+                profile.last_verified_at = Some(unix_secs());
+                profile.last_error = if result.exit_code == 0 {
+                    None
+                } else {
+                    Some(format!("SSH check exited with {}", result.exit_code))
+                };
+                save_verified_profile(user_id, profile.clone())?;
+            }
+            Err(error) => {
+                profile.last_error = Some(error.to_string());
+                profile.updated_at = unix_secs();
+                let _ = save_verified_profile(user_id, profile.clone());
+                return Err(error);
+            }
+        }
+    }
+
+    Ok(profile_view(&profile))
 }
 
 pub(crate) fn tool_remote_command(

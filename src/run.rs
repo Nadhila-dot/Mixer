@@ -1447,7 +1447,7 @@ fn validate_args(tool: &tools::ParsedToolOwned) -> Result<(), String> {
     }
     if matches!(
         tool.name.as_str(),
-        "VultrGetInstance" | "VultrPowerAction" | "VultrCheckAccess" | "RemoteCommand"
+        "VultrGetInstance" | "VultrPowerAction" | "VultrSaveAccess" | "VultrCheckAccess" | "RemoteCommand"
     ) {
         let instance_id = tool
             .attrs
@@ -1469,6 +1469,41 @@ fn validate_args(tool: &tools::ParsedToolOwned) -> Result<(), String> {
             .trim();
         if command.is_empty() {
             return Err("Tool 'RemoteCommand' requires a command body or command attribute".into());
+        }
+    }
+    if tool.name == "VultrSaveAccess" {
+        let auth_mode = tool
+            .attrs
+            .get("auth_mode")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        let password = tool
+            .attrs
+            .get("password")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        let private_key = tool
+            .attrs
+            .get("private_key")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        let inferred_mode = if auth_mode.is_empty() {
+            if !private_key.is_empty() {
+                "ssh_key"
+            } else {
+                "password"
+            }
+        } else {
+            auth_mode
+        };
+        if inferred_mode == "password" && password.is_empty() {
+            return Err("Tool 'VultrSaveAccess' requires a password attribute for password auth".into());
+        }
+        if inferred_mode == "ssh_key" && private_key.is_empty() {
+            return Err("Tool 'VultrSaveAccess' requires a private_key attribute for ssh_key auth".into());
         }
     }
     Ok(())
@@ -1552,6 +1587,7 @@ fn should_not_retry_tool_failure(name: &str, error: Option<&str>) -> bool {
             | "VultrListOs"
             | "VultrListSshKeys"
             | "VultrImportSshKey"
+            | "VultrSaveAccess"
             | "VultrCheckAccess"
             | "RemoteCommand"
     ) {
