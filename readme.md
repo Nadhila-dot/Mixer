@@ -49,5 +49,7 @@ sequenceDiagram
 - [x] Workspace syncing.
 - [x] Mermaid diagram support in chats
 - [x] Skill system
+- [ ] Mixer connectors (3rd party apps like slack, discord, email, etc)
+- [ ] Extending skills to be created and etc. 
 - [ ] Hooks system for external API calls
 - [ ] Connect to computers / other systems to control them (only ssh for now)
