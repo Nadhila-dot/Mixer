@@ -10,6 +10,7 @@ mod server;
 mod skills;
 mod ssr;
 mod tools;
+mod vultr;
 mod workspace;
 
 pub mod dev;

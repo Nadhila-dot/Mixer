@@ -38,6 +38,7 @@ import AppBackground from "../components/AppBackground";
 import Sidebar from "../components/Sidebar";
 import ModelSelector from "../components/ModelSelector";
 import WorkspacePanel, { type WorkspaceState, parseWorkspaceToolResult, applyWorkspaceUpdate } from "../components/WorkspacePanel";
+import VultrPanel from "../components/VultrPanel";
 import type {
   AiModel,
   ChatMessage,
@@ -181,6 +182,7 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceState | null>(null);
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
+  const [vultrPanelOpen, setVultrPanelOpen] = useState(false);
   const [workspaceWidth, setWorkspaceWidth] = useState<number>(() => clampWorkspaceWidth(readStoredWorkspaceWidth()));
   const [isDraggingDivider, setIsDraggingDivider] = useState(false);
   const [models, setModels] = useState<AiModel[]>([]);
@@ -1179,10 +1181,15 @@ export default function ChatPage() {
         <div aria-hidden style={{ position: "absolute", inset: 0, zIndex: 1, background: "radial-gradient(ellipse 100% 100% at 50% 50%, transparent 42%, rgba(0,0,0,0.30) 100%)", pointerEvents: "none" }} />
         <div style={{ position: "relative", zIndex: 2, width: "100%", height: "100%", display: "flex", flexDirection: "column" }}>
           <header style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <button type="button" onClick={() => setSidebarOpen(true)} style={{ ...pillGlass, display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 999, fontSize: 13, color: "rgba(255,255,255,0.82)", cursor: "pointer" }}>
-              <SidebarIcon size={14} strokeWidth={1.8} />
-              Chats
-            </button>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <button type="button" onClick={() => setSidebarOpen(true)} style={{ ...pillGlass, display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 999, fontSize: 13, color: "rgba(255,255,255,0.82)", cursor: "pointer" }}>
+                <SidebarIcon size={14} strokeWidth={1.8} />
+                Chats
+              </button>
+              <button type="button" onClick={() => setVultrPanelOpen(true)} style={{ ...pillGlass, display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px", borderRadius: 999, fontSize: 13, color: "rgba(255,255,255,0.82)", cursor: "pointer" }}>
+                Vultr
+              </button>
+            </div>
             <a href="/usr/logout" style={{ ...smallPillGlass, padding: "7px 12px", borderRadius: 999, color: "rgba(255,255,255,0.78)", fontSize: 12, textDecoration: "none" }}>
               {appData.user.name} - {appData.user.tier ?? "free"}
             </a>
@@ -1247,6 +1254,7 @@ export default function ChatPage() {
         </div>
 
         <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} user={appData.user} chats={appData.recent_chats} onDeleteChat={(chatId) => void deleteChat(chatId)} />
+        <VultrPanel open={vultrPanelOpen} onClose={() => setVultrPanelOpen(false)} />
       </div>
     );
   }
@@ -1315,6 +1323,25 @@ export default function ChatPage() {
           >
             <SidebarIcon size={14} strokeWidth={1.8} />
             Chats
+          </button>
+          <button
+            type="button"
+            onClick={() => setVultrPanelOpen(true)}
+            style={{
+              ...pillGlass,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "8px 14px",
+              borderRadius: 999,
+              fontFamily: FONT,
+              fontSize: 13,
+              color: "rgba(255,255,255,0.82)",
+              cursor: "pointer",
+              zIndex: 1,
+            }}
+          >
+            Vultr
           </button>
 
           <div
@@ -1575,6 +1602,7 @@ export default function ChatPage() {
         chats={appData.recent_chats}
         onDeleteChat={(chatId) => void deleteChat(chatId)}
       />
+      <VultrPanel open={vultrPanelOpen} onClose={() => setVultrPanelOpen(false)} />
     </div>
   );
 }

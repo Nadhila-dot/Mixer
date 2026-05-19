@@ -1,4 +1,4 @@
-use crate::{auth, handlers::pages};
+use crate::{auth, handlers::pages, vultr};
 use serde_json::json;
 use std::sync::mpsc::Receiver;
 
@@ -139,6 +139,41 @@ pub async fn dispatch(req: &Request) -> Response {
         ("GET", "/api/health") => pages::api::health().await,
         ("GET", "/api/app-state") => auth::app_state(req).await,
         ("GET", "/api/models") => auth::models().await,
+        ("GET", "/api/integrations/vultr") => vultr::get_integration(req).await,
+        ("PUT", "/api/integrations/vultr") => vultr::put_integration(req).await,
+        ("POST", "/api/integrations/vultr/verify") => vultr::verify_integration(req).await,
+        ("DELETE", "/api/integrations/vultr") => vultr::delete_integration(req).await,
+        ("GET", "/api/vultr/instances") => vultr::list_instances(req).await,
+        ("POST", "/api/vultr/instances") => vultr::create_instance(req).await,
+        ("GET", "/api/vultr/catalog/regions") => vultr::list_regions(req).await,
+        ("GET", "/api/vultr/catalog/plans") => vultr::list_plans(req).await,
+        ("GET", "/api/vultr/catalog/os") => vultr::list_os(req).await,
+        ("GET", "/api/vultr/ssh-keys") => vultr::list_ssh_keys(req).await,
+        ("POST", "/api/vultr/ssh-keys") => vultr::import_ssh_key(req).await,
+        ("PUT", path) if path.starts_with("/api/vultr/access-profiles/") => {
+            let instance_id = path.trim_start_matches("/api/vultr/access-profiles/");
+            vultr::upsert_access_profile(req, instance_id).await
+        }
+        ("DELETE", path) if path.starts_with("/api/vultr/access-profiles/") => {
+            let instance_id = path.trim_start_matches("/api/vultr/access-profiles/");
+            vultr::delete_access_profile(req, instance_id).await
+        }
+        ("POST", path) if path.starts_with("/api/vultr/access-profiles/") && path.ends_with("/test") => {
+            let instance_id = path
+                .trim_start_matches("/api/vultr/access-profiles/")
+                .trim_end_matches("/test");
+            vultr::test_access_profile(req, instance_id).await
+        }
+        ("GET", path) if path.starts_with("/api/vultr/instances/") => {
+            let instance_id = path.trim_start_matches("/api/vultr/instances/");
+            vultr::get_instance(req, instance_id).await
+        }
+        ("POST", path) if path.starts_with("/api/vultr/instances/") && path.ends_with("/power") => {
+            let instance_id = path
+                .trim_start_matches("/api/vultr/instances/")
+                .trim_end_matches("/power");
+            vultr::power_action(req, instance_id).await
+        }
         ("GET", path) if path.starts_with("/api/workspaces/") && path.contains("/port/") => {
             let rest = path.trim_start_matches("/api/workspaces/");
             let Some((workspace_id, port_and_tail)) = rest.split_once("/port/") else {

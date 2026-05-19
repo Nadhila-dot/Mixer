@@ -110,6 +110,25 @@ pub trait AuthStore {
     fn get_user_settings(&self, user_id: i64) -> Result<UserSettings, DbError>;
     fn upsert_user_settings(&self, user_id: i64, settings: &UserSettings) -> Result<(), DbError>;
     fn update_user_name(&self, user_id: i64, name: &str) -> Result<(), DbError>;
+    fn get_vultr_account(&self, user_id: i64) -> Result<Option<VultrAccount>, DbError>;
+    fn upsert_vultr_account(&self, user_id: i64, account: &VultrAccount) -> Result<(), DbError>;
+    fn delete_vultr_account(&self, user_id: i64) -> Result<(), DbError>;
+    fn get_instance_access_profile(
+        &self,
+        user_id: i64,
+        instance_id: &str,
+    ) -> Result<Option<InstanceAccessProfile>, DbError>;
+    fn list_instance_access_profiles(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<InstanceAccessProfile>, DbError>;
+    fn upsert_instance_access_profile(
+        &self,
+        user_id: i64,
+        profile: &InstanceAccessProfile,
+    ) -> Result<(), DbError>;
+    fn delete_instance_access_profile(&self, user_id: i64, instance_id: &str) -> Result<(), DbError>;
+    fn delete_all_instance_access_profiles(&self, user_id: i64) -> Result<(), DbError>;
 
     // Bulk destructive operations (used by the settings page)
     fn delete_all_chats_for_user(&self, user_id: i64) -> Result<usize, DbError>;
@@ -211,6 +230,33 @@ impl Default for UserSettings {
             updated_at: 0,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct VultrAccount {
+    pub encrypted_api_key: String,
+    pub api_key_last4: String,
+    pub label: String,
+    pub verified_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstanceAccessProfile {
+    pub instance_id: String,
+    pub instance_label: String,
+    pub host: String,
+    pub port: i64,
+    pub username: String,
+    pub auth_mode: String,
+    pub encrypted_secret: String,
+    pub public_key: String,
+    pub last_verified_at: Option<i64>,
+    pub last_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -488,6 +534,45 @@ impl AuthStore for UnsupportedAuthStore {
         Err(self.error())
     }
     fn update_user_name(&self, _user_id: i64, _name: &str) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn get_vultr_account(&self, _user_id: i64) -> Result<Option<VultrAccount>, DbError> {
+        Err(self.error())
+    }
+    fn upsert_vultr_account(&self, _user_id: i64, _account: &VultrAccount) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn delete_vultr_account(&self, _user_id: i64) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn get_instance_access_profile(
+        &self,
+        _user_id: i64,
+        _instance_id: &str,
+    ) -> Result<Option<InstanceAccessProfile>, DbError> {
+        Err(self.error())
+    }
+    fn list_instance_access_profiles(
+        &self,
+        _user_id: i64,
+    ) -> Result<Vec<InstanceAccessProfile>, DbError> {
+        Err(self.error())
+    }
+    fn upsert_instance_access_profile(
+        &self,
+        _user_id: i64,
+        _profile: &InstanceAccessProfile,
+    ) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn delete_instance_access_profile(
+        &self,
+        _user_id: i64,
+        _instance_id: &str,
+    ) -> Result<(), DbError> {
+        Err(self.error())
+    }
+    fn delete_all_instance_access_profiles(&self, _user_id: i64) -> Result<(), DbError> {
         Err(self.error())
     }
     fn delete_all_chats_for_user(&self, _user_id: i64) -> Result<usize, DbError> {

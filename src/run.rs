@@ -1445,6 +1445,32 @@ fn validate_args(tool: &tools::ParsedToolOwned) -> Result<(), String> {
             ));
         }
     }
+    if matches!(
+        tool.name.as_str(),
+        "VultrGetInstance" | "VultrPowerAction" | "VultrCheckAccess" | "RemoteCommand"
+    ) {
+        let instance_id = tool
+            .attrs
+            .get("instance_id")
+            .or_else(|| tool.attrs.get("id"))
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        if instance_id.is_empty() {
+            return Err(format!("Tool '{}' requires instance_id attribute", tool.name));
+        }
+    }
+    if tool.name == "RemoteCommand" {
+        let command = tool
+            .attrs
+            .get("command")
+            .map(String::as_str)
+            .unwrap_or(tool.body.as_str())
+            .trim();
+        if command.is_empty() {
+            return Err("Tool 'RemoteCommand' requires a command body or command attribute".into());
+        }
+    }
     Ok(())
 }
 
@@ -1515,6 +1541,22 @@ fn extract_tool_result_body(xml: &str) -> Option<String> {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn should_not_retry_tool_failure(name: &str, error: Option<&str>) -> bool {
+    if matches!(
+        name,
+        "VultrListInstances"
+            | "VultrGetInstance"
+            | "VultrDeployInstance"
+            | "VultrPowerAction"
+            | "VultrListRegions"
+            | "VultrListPlans"
+            | "VultrListOs"
+            | "VultrListSshKeys"
+            | "VultrImportSshKey"
+            | "VultrCheckAccess"
+            | "RemoteCommand"
+    ) {
+        return true;
+    }
     if !matches!(name, "Command" | "LongRunProcess") {
         return false;
     }

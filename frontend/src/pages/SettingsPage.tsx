@@ -18,6 +18,16 @@ interface Settings {
   custom_instructions: string;
 }
 
+interface VultrConnectionStatus {
+  status: "connected" | "missing" | "invalid" | "rate_limited" | "server_misconfigured";
+  connected: boolean;
+  label?: string | null;
+  api_key_last4?: string | null;
+  verified_at?: number | null;
+  last_error?: string | null;
+  api_access_url: string;
+}
+
 const BASE_STYLES: { value: string; label: string; hint: string }[] = [
   { value: "default", label: "Default", hint: "Balanced and adaptive" },
   { value: "concise", label: "Concise", hint: "Short, direct sentences" },
@@ -63,6 +73,10 @@ export default function SettingsPage() {
   const [confirmingChats, setConfirmingChats] = useState(false);
   const [confirmingWorkspaces, setConfirmingWorkspaces] = useState(false);
   const [destructive, setDestructive] = useState<string | null>(null);
+  const [vultrConnection, setVultrConnection] = useState<VultrConnectionStatus | null>(null);
+  const [vultrApiKey, setVultrApiKey] = useState("");
+  const [vultrLabel, setVultrLabel] = useState("");
+  const [vultrBusy, setVultrBusy] = useState<null | "save" | "delete" | "verify">(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +105,15 @@ export default function SettingsPage() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    void fetch("/api/integrations/vultr", { credentials: "same-origin" })
+      .then(async (res) => {
+        const body = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok || !body.ok) return;
+        setVultrConnection(body.connection ?? null);
+        setVultrLabel(body.connection?.label ?? "");
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -171,6 +194,81 @@ export default function SettingsPage() {
       setError(err instanceof Error ? err.message : "Delete failed");
     } finally {
       setDestructive(null);
+    }
+  }
+
+  async function connectVultr() {
+    setVultrBusy("save");
+    setError(null);
+    try {
+      const res = await fetch("/api/integrations/vultr", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          api_key: vultrApiKey,
+          label: vultrLabel,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body.error || "Could not connect Vultr");
+      setVultrConnection(body.connection ?? null);
+      setVultrLabel(body.connection?.label ?? "");
+      setVultrApiKey("");
+      setSavedAt(Date.now());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not connect Vultr");
+    } finally {
+      setVultrBusy(null);
+    }
+  }
+
+  async function verifyVultr() {
+    setVultrBusy("verify");
+    setError(null);
+    try {
+      const res = await fetch("/api/integrations/vultr/verify", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body.error || "Could not verify Vultr");
+      const refreshed = await fetch("/api/integrations/vultr", { credentials: "same-origin" });
+      const refreshedBody = await refreshed.json().catch(() => ({}));
+      if (refreshed.ok && refreshedBody.ok) {
+        setVultrConnection(refreshedBody.connection ?? null);
+      }
+      setSavedAt(Date.now());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not verify Vultr");
+    } finally {
+      setVultrBusy(null);
+    }
+  }
+
+  async function disconnectVultr() {
+    setVultrBusy("delete");
+    setError(null);
+    try {
+      const res = await fetch("/api/integrations/vultr", {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.ok) throw new Error(body.error || "Could not disconnect Vultr");
+      setVultrConnection({
+        status: "missing",
+        connected: false,
+        api_access_url: "https://console.vultr.com/user/apiaccess/",
+      });
+      setVultrApiKey("");
+      setSavedAt(Date.now());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not disconnect Vultr");
+    } finally {
+      setVultrBusy(null);
     }
   }
 
@@ -310,6 +408,125 @@ export default function SettingsPage() {
                     style={textareaStyle}
                   />
                 </Field>
+              </Section>
+
+              <Section
+                title="Vultr"
+                hint="Connect your Vultr account so Mixer can list, deploy, inspect, and operate cloud infrastructure directly."
+              >
+                <Field label="Connection status">
+                  <div style={{ ...innerGlass, padding: 14, color: "rgba(255,255,255,0.82)", fontSize: 13.5 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span
+                        style={{
+                          ...smallPillGlass,
+                          padding: "5px 10px",
+                          borderRadius: 999,
+                          color:
+                            vultrConnection?.status === "connected"
+                              ? "rgba(120,220,140,0.92)"
+                              : vultrConnection?.status === "rate_limited"
+                                ? "rgba(255,210,120,0.92)"
+                                : "rgba(255,150,150,0.92)",
+                        }}
+                      >
+                        {vultrConnection?.connected
+                          ? "Connected"
+                          : vultrConnection?.status === "missing"
+                            ? "Not connected"
+                            : vultrConnection?.status === "rate_limited"
+                              ? "Rate limited"
+                              : "Invalid or unavailable"}
+                      </span>
+                      {vultrConnection?.api_key_last4 && (
+                        <span style={{ color: "rgba(255,255,255,0.58)" }}>
+                          API key ending in {vultrConnection.api_key_last4}
+                        </span>
+                      )}
+                    </div>
+                    {vultrConnection?.last_error && (
+                      <div style={{ marginTop: 10, color: "rgba(255,210,120,0.92)", lineHeight: 1.5 }}>
+                        {vultrConnection.last_error}
+                      </div>
+                    )}
+                  </div>
+                </Field>
+
+                <Field label="Account label" hint="Optional nickname for this Vultr account inside Mixer.">
+                  <input
+                    type="text"
+                    value={vultrLabel}
+                    onChange={(e) => setVultrLabel(e.target.value)}
+                    style={inputStyle}
+                  />
+                </Field>
+
+                <Field
+                  label="Vultr API key"
+                  hint={
+                    vultrConnection?.connected
+                      ? "Paste a new key only when rotating credentials."
+                      : "Create the key in Vultr API Access, then paste it here."
+                  }
+                >
+                  <textarea
+                    value={vultrApiKey}
+                    onChange={(e) => setVultrApiKey(e.target.value)}
+                    placeholder="Paste your Vultr API key"
+                    rows={3}
+                    style={textareaStyle}
+                  />
+                </Field>
+
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => void connectVultr()}
+                    disabled={
+                      vultrBusy !== null ||
+                      (vultrApiKey.trim().length === 0 &&
+                        !(vultrConnection?.connected && vultrLabel.trim() !== (vultrConnection.label ?? "").trim()))
+                    }
+                    style={settingsActionButtonStyle}
+                  >
+                    {vultrBusy === "save"
+                      ? "Saving…"
+                      : vultrConnection?.connected
+                        ? vultrApiKey.trim().length > 0
+                          ? "Rotate key"
+                          : "Update label"
+                        : "Connect Vultr"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void verifyVultr()}
+                    disabled={vultrBusy !== null || !vultrConnection?.connected}
+                    style={secondaryActionButtonStyle}
+                  >
+                    {vultrBusy === "verify" ? "Verifying…" : "Verify connection"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void disconnectVultr()}
+                    disabled={vultrBusy !== null || !vultrConnection?.connected}
+                    style={dangerActionButtonStyle}
+                  >
+                    {vultrBusy === "delete" ? "Disconnecting…" : "Disconnect"}
+                  </button>
+                </div>
+
+                <div style={{ color: "rgba(255,255,255,0.54)", fontSize: 12.5, lineHeight: 1.6 }}>
+                  Vultr API keys are effectively full-account credentials. Generate them in{" "}
+                  <a
+                    href={vultrConnection?.api_access_url ?? "https://console.vultr.com/user/apiaccess/"}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: "rgba(180,220,255,0.94)" }}
+                  >
+                    Vultr API Access
+                  </a>
+                  . Mixer stores them encrypted server-side and never returns the raw key in chat or API responses.
+                </div>
               </Section>
 
               {/* DANGER ZONE */}
@@ -715,6 +932,39 @@ const dangerDescStyle: CSSProperties = {
   color: "rgba(255,255,255,0.45)",
   lineHeight: 1.45,
   maxWidth: 480,
+};
+
+const settingsActionButtonStyle: CSSProperties = {
+  ...pillGlass,
+  padding: "9px 15px",
+  borderRadius: 999,
+  border: "none",
+  color: "rgba(255,255,255,0.9)",
+  fontFamily: FONT,
+  fontSize: 13,
+  cursor: "pointer",
+};
+
+const secondaryActionButtonStyle: CSSProperties = {
+  ...smallPillGlass,
+  padding: "9px 15px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.08)",
+  color: "rgba(255,255,255,0.84)",
+  fontFamily: FONT,
+  fontSize: 13,
+  cursor: "pointer",
+};
+
+const dangerActionButtonStyle: CSSProperties = {
+  ...smallPillGlass,
+  padding: "9px 15px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,130,130,0.18)",
+  color: "rgba(255,170,170,0.94)",
+  fontFamily: FONT,
+  fontSize: 13,
+  cursor: "pointer",
 };
 
 const errorStyle: CSSProperties = {

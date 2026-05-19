@@ -677,6 +677,198 @@ impl AuthStore for SqliteAuthStore {
         .map_err(|e| DbError::Query(e.to_string()))
     }
 
+    fn get_vultr_account(&self, user_id: i64) -> Result<Option<super::VultrAccount>, DbError> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT encrypted_api_key, api_key_last4, label, verified_at, last_error, created_at, updated_at
+             FROM user_vultr_accounts WHERE user_id = ?1",
+            params![user_id],
+            |row| {
+                Ok(super::VultrAccount {
+                    encrypted_api_key: row.get(0)?,
+                    api_key_last4: row.get(1)?,
+                    label: row.get(2)?,
+                    verified_at: row.get(3)?,
+                    last_error: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| DbError::Query(e.to_string()))
+    }
+
+    fn upsert_vultr_account(
+        &self,
+        user_id: i64,
+        account: &super::VultrAccount,
+    ) -> Result<(), DbError> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO user_vultr_accounts
+             (user_id, encrypted_api_key, api_key_last4, label, verified_at, last_error, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(user_id) DO UPDATE SET
+                encrypted_api_key = excluded.encrypted_api_key,
+                api_key_last4 = excluded.api_key_last4,
+                label = excluded.label,
+                verified_at = excluded.verified_at,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at",
+            params![
+                user_id,
+                &account.encrypted_api_key,
+                &account.api_key_last4,
+                &account.label,
+                account.verified_at,
+                &account.last_error,
+                account.created_at,
+                account.updated_at,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| DbError::Query(e.to_string()))
+    }
+
+    fn delete_vultr_account(&self, user_id: i64) -> Result<(), DbError> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM user_vultr_accounts WHERE user_id = ?1",
+            params![user_id],
+        )
+        .map(|_| ())
+        .map_err(|e| DbError::Query(e.to_string()))
+    }
+
+    fn get_instance_access_profile(
+        &self,
+        user_id: i64,
+        instance_id: &str,
+    ) -> Result<Option<super::InstanceAccessProfile>, DbError> {
+        let conn = self.connect()?;
+        conn.query_row(
+            "SELECT instance_id, instance_label, host, port, username, auth_mode, encrypted_secret, public_key, last_verified_at, last_error, created_at, updated_at
+             FROM user_instance_access_profiles
+             WHERE user_id = ?1 AND instance_id = ?2",
+            params![user_id, instance_id],
+            |row| {
+                Ok(super::InstanceAccessProfile {
+                    instance_id: row.get(0)?,
+                    instance_label: row.get(1)?,
+                    host: row.get(2)?,
+                    port: row.get(3)?,
+                    username: row.get(4)?,
+                    auth_mode: row.get(5)?,
+                    encrypted_secret: row.get(6)?,
+                    public_key: row.get(7)?,
+                    last_verified_at: row.get(8)?,
+                    last_error: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| DbError::Query(e.to_string()))
+    }
+
+    fn list_instance_access_profiles(
+        &self,
+        user_id: i64,
+    ) -> Result<Vec<super::InstanceAccessProfile>, DbError> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT instance_id, instance_label, host, port, username, auth_mode, encrypted_secret, public_key, last_verified_at, last_error, created_at, updated_at
+                 FROM user_instance_access_profiles
+                 WHERE user_id = ?1
+                 ORDER BY updated_at DESC",
+            )
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                Ok(super::InstanceAccessProfile {
+                    instance_id: row.get(0)?,
+                    instance_label: row.get(1)?,
+                    host: row.get(2)?,
+                    port: row.get(3)?,
+                    username: row.get(4)?,
+                    auth_mode: row.get(5)?,
+                    encrypted_secret: row.get(6)?,
+                    public_key: row.get(7)?,
+                    last_verified_at: row.get(8)?,
+                    last_error: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
+                })
+            })
+            .map_err(|e| DbError::Query(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| DbError::Query(e.to_string()))
+    }
+
+    fn upsert_instance_access_profile(
+        &self,
+        user_id: i64,
+        profile: &super::InstanceAccessProfile,
+    ) -> Result<(), DbError> {
+        let conn = self.connect()?;
+        conn.execute(
+            "INSERT INTO user_instance_access_profiles
+             (user_id, instance_id, instance_label, host, port, username, auth_mode, encrypted_secret, public_key, last_verified_at, last_error, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(user_id, instance_id) DO UPDATE SET
+                instance_label = excluded.instance_label,
+                host = excluded.host,
+                port = excluded.port,
+                username = excluded.username,
+                auth_mode = excluded.auth_mode,
+                encrypted_secret = excluded.encrypted_secret,
+                public_key = excluded.public_key,
+                last_verified_at = excluded.last_verified_at,
+                last_error = excluded.last_error,
+                updated_at = excluded.updated_at",
+            params![
+                user_id,
+                &profile.instance_id,
+                &profile.instance_label,
+                &profile.host,
+                profile.port,
+                &profile.username,
+                &profile.auth_mode,
+                &profile.encrypted_secret,
+                &profile.public_key,
+                profile.last_verified_at,
+                &profile.last_error,
+                profile.created_at,
+                profile.updated_at,
+            ],
+        )
+        .map(|_| ())
+        .map_err(|e| DbError::Query(e.to_string()))
+    }
+
+    fn delete_instance_access_profile(&self, user_id: i64, instance_id: &str) -> Result<(), DbError> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM user_instance_access_profiles WHERE user_id = ?1 AND instance_id = ?2",
+            params![user_id, instance_id],
+        )
+        .map(|_| ())
+        .map_err(|e| DbError::Query(e.to_string()))
+    }
+
+    fn delete_all_instance_access_profiles(&self, user_id: i64) -> Result<(), DbError> {
+        let conn = self.connect()?;
+        conn.execute(
+            "DELETE FROM user_instance_access_profiles WHERE user_id = ?1",
+            params![user_id],
+        )
+        .map(|_| ())
+        .map_err(|e| DbError::Query(e.to_string()))
+    }
+
     fn delete_all_chats_for_user(&self, user_id: i64) -> Result<usize, DbError> {
         let conn = self.connect()?;
         // chat_messages, agent_runs, tool_calls, agent_events all cascade via FK.
@@ -829,6 +1021,39 @@ fn migrate(conn: &Connection) -> Result<(), DbError> {
             updated_at INTEGER NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS user_vultr_accounts (
+            user_id INTEGER PRIMARY KEY,
+            encrypted_api_key TEXT NOT NULL,
+            api_key_last4 TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '',
+            verified_at INTEGER,
+            last_error TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS user_instance_access_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            instance_id TEXT NOT NULL,
+            instance_label TEXT NOT NULL DEFAULT '',
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL DEFAULT 22,
+            username TEXT NOT NULL DEFAULT 'root',
+            auth_mode TEXT NOT NULL,
+            encrypted_secret TEXT NOT NULL DEFAULT '',
+            public_key TEXT NOT NULL DEFAULT '',
+            last_verified_at INTEGER,
+            last_error TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(user_id, instance_id),
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_instance_access_profiles_user_updated
+            ON user_instance_access_profiles(user_id, updated_at DESC);
 
         DELETE FROM sessions WHERE expires_at <= strftime('%s', 'now');
         ",

@@ -198,6 +198,17 @@ pub fn executable_tool_names(raw: &str) -> Vec<String> {
                     | "DeleteFile"
                     | "CreateDirectory"
                     | "DeleteDirectory"
+                    | "VultrListInstances"
+                    | "VultrGetInstance"
+                    | "VultrDeployInstance"
+                    | "VultrPowerAction"
+                    | "VultrListRegions"
+                    | "VultrListPlans"
+                    | "VultrListOs"
+                    | "VultrListSshKeys"
+                    | "VultrImportSshKey"
+                    | "VultrCheckAccess"
+                    | "RemoteCommand"
             )
         })
         .map(|tool| tool.name.to_string())
@@ -378,6 +389,8 @@ pub fn looks_like_internal_action(raw: &str) -> bool {
         || trimmed.starts_with("<AppendFile")
         || trimmed.starts_with("<Command")
         || trimmed.starts_with("<LongRunProcess")
+        || trimmed.starts_with("<Vultr")
+        || trimmed.starts_with("<RemoteCommand")
         || (trimmed.starts_with('{')
             && (trimmed.contains("\"arguments\"")
                 || trimmed.contains("\"tool_call\"")
@@ -723,6 +736,24 @@ fn infer_tool_name(
     if has("task") {
         return "completeTodo".into();
     }
+    if has("instance_id") && has("command") {
+        return "RemoteCommand".into();
+    }
+    if has("instance_id") && has("action") {
+        return "VultrPowerAction".into();
+    }
+    if has("instance_id") && has("verify") {
+        return "VultrCheckAccess".into();
+    }
+    if has("instance_id") {
+        return "VultrGetInstance".into();
+    }
+    if has("region") && has("plan") && has("os_id") {
+        return "VultrDeployInstance".into();
+    }
+    if has("public_key") && has("name") {
+        return "VultrImportSshKey".into();
+    }
     if has("path") && has("id") && has("command") {
         return "Command".into();
     }
@@ -885,6 +916,17 @@ fn is_supported_tool(name: &str) -> bool {
             | "DeleteFile"
             | "CreateDirectory"
             | "DeleteDirectory"
+            | "VultrListInstances"
+            | "VultrGetInstance"
+            | "VultrDeployInstance"
+            | "VultrPowerAction"
+            | "VultrListRegions"
+            | "VultrListPlans"
+            | "VultrListOs"
+            | "VultrListSshKeys"
+            | "VultrImportSshKey"
+            | "VultrCheckAccess"
+            | "RemoteCommand"
     )
 }
 
@@ -1035,6 +1077,69 @@ where
             let ws_id = attrs.get("id").map(String::as_str).unwrap_or("");
             let path = attrs.get("path").map(String::as_str).unwrap_or(body.trim());
             ws_delete_directory(user_id, ws_id, path)
+        }
+        "VultrListInstances" => vultr_list_instances(user_id),
+        "VultrGetInstance" => {
+            let instance_id = attrs
+                .get("instance_id")
+                .or_else(|| attrs.get("id"))
+                .map(String::as_str)
+                .unwrap_or(body.trim());
+            vultr_get_instance(user_id, instance_id)
+        }
+        "VultrDeployInstance" => vultr_deploy_instance(user_id, &attrs),
+        "VultrPowerAction" => {
+            let instance_id = attrs
+                .get("instance_id")
+                .or_else(|| attrs.get("id"))
+                .map(String::as_str)
+                .unwrap_or("");
+            let action = attrs
+                .get("action")
+                .map(String::as_str)
+                .unwrap_or(body.trim());
+            vultr_power_action(user_id, instance_id, action)
+        }
+        "VultrListRegions" => vultr_list_regions(user_id),
+        "VultrListPlans" => vultr_list_plans(user_id),
+        "VultrListOs" => vultr_list_os(user_id),
+        "VultrListSshKeys" => vultr_list_ssh_keys(user_id),
+        "VultrImportSshKey" => {
+            let name = attrs.get("name").map(String::as_str).unwrap_or("");
+            let public_key = attrs
+                .get("public_key")
+                .or_else(|| attrs.get("key"))
+                .map(String::as_str)
+                .unwrap_or(body.trim());
+            vultr_import_ssh_key(user_id, name, public_key)
+        }
+        "VultrCheckAccess" => {
+            let instance_id = attrs
+                .get("instance_id")
+                .or_else(|| attrs.get("id"))
+                .map(String::as_str)
+                .unwrap_or("");
+            let verify = attrs
+                .get("verify")
+                .map(|value| matches!(value.as_str(), "true" | "1" | "yes"))
+                .unwrap_or(false);
+            vultr_check_access(user_id, instance_id, verify)
+        }
+        "RemoteCommand" => {
+            let instance_id = attrs
+                .get("instance_id")
+                .or_else(|| attrs.get("id"))
+                .map(String::as_str)
+                .unwrap_or("");
+            let timeout = attrs
+                .get("timeout")
+                .and_then(|t| t.parse::<u64>().ok())
+                .unwrap_or(20);
+            let command = attrs
+                .get("command")
+                .map(String::as_str)
+                .unwrap_or(body.trim());
+            remote_command(user_id, instance_id, command, timeout)
         }
         "code" | "html" => rebuild_tool(name, attrs, body),
         _ => body.to_string(),
@@ -1446,6 +1551,208 @@ fn ws_delete_directory(user_id: i64, ws_id: &str, path: &str) -> String {
             Err(e) => tool_result("workspace", &format!("DeleteDirectory failed: {e}")),
         },
         Err(e) => tool_result("workspace", &e),
+    }
+}
+
+fn vultr_tool_result(action: &str, body: &str) -> String {
+    format!(
+        "<tool_result tool=\"vultr\" action=\"{}\">{}</tool_result>",
+        escape_xml(action),
+        escape_xml(&redact_sensitive(body)),
+    )
+}
+
+fn vultr_list_instances(user_id: i64) -> String {
+    match crate::vultr::tool_list_instances(user_id) {
+        Ok(instances) => {
+            let mut out = String::from("Vultr instances:\n");
+            for instance in instances {
+                out.push_str(&format!(
+                    "- {} | {} | {} | {} | {} | ssh={}\n",
+                    instance.id,
+                    if instance.label.trim().is_empty() {
+                        "(unlabeled)"
+                    } else {
+                        instance.label.as_str()
+                    },
+                    instance.main_ip,
+                    instance.power_status,
+                    instance.server_status,
+                    instance.ssh_state,
+                ));
+            }
+            vultr_tool_result("VultrListInstances", out.trim_end())
+        }
+        Err(error) => vultr_tool_result("VultrListInstances", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_get_instance(user_id: i64, instance_id: &str) -> String {
+    match crate::vultr::tool_get_instance(user_id, instance_id) {
+        Ok(instance) => vultr_tool_result(
+            "VultrGetInstance",
+            &format!(
+                "Instance {}\nLabel: {}\nIP: {}\nRegion: {}\nPlan: {}\nOS: {}\nPower: {}\nServer: {}\nSSH: {}",
+                instance.id,
+                instance.label,
+                instance.main_ip,
+                instance.region,
+                instance.plan,
+                instance.os,
+                instance.power_status,
+                instance.server_status,
+                instance.ssh_state,
+            ),
+        ),
+        Err(error) => vultr_tool_result("VultrGetInstance", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_deploy_instance(user_id: i64, attrs: &HashMap<String, String>) -> String {
+    let ssh_key_ids = attrs
+        .get("ssh_key_ids")
+        .map(|value| {
+            value
+                .split(',')
+                .map(|part| part.trim().to_string())
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let input = crate::vultr::DeployInstanceInput {
+        label: attrs.get("label").cloned().unwrap_or_default(),
+        region: attrs.get("region").cloned().unwrap_or_default(),
+        plan: attrs.get("plan").cloned().unwrap_or_default(),
+        os_id: attrs
+            .get("os_id")
+            .or_else(|| attrs.get("image_id"))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
+        ssh_key_ids,
+    };
+    match crate::vultr::tool_deploy_instance(user_id, input) {
+        Ok(instance) => vultr_tool_result(
+            "VultrDeployInstance",
+            &format!(
+                "Deployed instance {}\nLabel: {}\nIP: {}\nRegion: {}\nPlan: {}\nOS: {}",
+                instance.id, instance.label, instance.main_ip, instance.region, instance.plan, instance.os
+            ),
+        ),
+        Err(error) => vultr_tool_result("VultrDeployInstance", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_power_action(user_id: i64, instance_id: &str, action: &str) -> String {
+    match crate::vultr::tool_power_action(user_id, instance_id, action) {
+        Ok(()) => vultr_tool_result(
+            "VultrPowerAction",
+            &format!("Power action '{}' submitted for instance '{}'.", action, instance_id),
+        ),
+        Err(error) => vultr_tool_result("VultrPowerAction", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_list_regions(user_id: i64) -> String {
+    match crate::vultr::tool_list_regions(user_id) {
+        Ok(entries) => {
+            let body = entries
+                .into_iter()
+                .map(|entry| format!("- {} | {}", entry.id, entry.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+            vultr_tool_result("VultrListRegions", &format!("Vultr regions:\n{body}"))
+        }
+        Err(error) => vultr_tool_result("VultrListRegions", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_list_plans(user_id: i64) -> String {
+    match crate::vultr::tool_list_plans(user_id) {
+        Ok(entries) => {
+            let body = entries
+                .into_iter()
+                .map(|entry| format!("- {} | {}", entry.id, entry.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+            vultr_tool_result("VultrListPlans", &format!("Vultr plans:\n{body}"))
+        }
+        Err(error) => vultr_tool_result("VultrListPlans", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_list_os(user_id: i64) -> String {
+    match crate::vultr::tool_list_os(user_id) {
+        Ok(entries) => {
+            let body = entries
+                .into_iter()
+                .map(|entry| format!("- {} | {} | {}", entry.id, entry.label, entry.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+            vultr_tool_result("VultrListOs", &format!("Vultr OS images:\n{body}"))
+        }
+        Err(error) => vultr_tool_result("VultrListOs", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_list_ssh_keys(user_id: i64) -> String {
+    match crate::vultr::tool_list_ssh_keys(user_id) {
+        Ok(entries) => {
+            let body = entries
+                .into_iter()
+                .map(|entry| format!("- {} | {}", entry.id, entry.label))
+                .collect::<Vec<_>>()
+                .join("\n");
+            vultr_tool_result("VultrListSshKeys", &format!("Vultr SSH keys:\n{body}"))
+        }
+        Err(error) => vultr_tool_result("VultrListSshKeys", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_import_ssh_key(user_id: i64, name: &str, public_key: &str) -> String {
+    match crate::vultr::tool_import_ssh_key(user_id, name, public_key) {
+        Ok(entry) => vultr_tool_result(
+            "VultrImportSshKey",
+            &format!("Imported SSH key {} ({})", entry.label, entry.id),
+        ),
+        Err(error) => vultr_tool_result("VultrImportSshKey", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn vultr_check_access(user_id: i64, instance_id: &str, verify: bool) -> String {
+    match crate::vultr::tool_check_access(user_id, instance_id, verify) {
+        Ok(profile) => vultr_tool_result(
+            "VultrCheckAccess",
+            &format!(
+                "Access profile for {}\nHost: {}:{}\nUser: {}\nAuth: {}\nState: {}",
+                profile.instance_id,
+                profile.host,
+                profile.port,
+                profile.username,
+                profile.auth_mode,
+                profile.ssh_state,
+            ),
+        ),
+        Err(error) => vultr_tool_result("VultrCheckAccess", &crate::vultr::format_tool_error(error)),
+    }
+}
+
+fn remote_command(user_id: i64, instance_id: &str, command: &str, timeout: u64) -> String {
+    match crate::vultr::tool_remote_command(user_id, instance_id, command, timeout) {
+        Ok(result) => vultr_tool_result(
+            "RemoteCommand",
+            &format!(
+                "$ ssh {}@{}:{} -- {}\n{}\nExit: {} ({}ms{})",
+                result.username,
+                result.host,
+                result.port,
+                redact_sensitive(command),
+                result.output,
+                result.exit_code,
+                result.duration_ms,
+                if result.timed_out { ", timed out" } else { "" },
+            ),
+        ),
+        Err(error) => vultr_tool_result("RemoteCommand", &crate::vultr::format_tool_error(error)),
     }
 }
 
