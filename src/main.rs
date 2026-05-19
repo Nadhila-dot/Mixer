@@ -15,12 +15,15 @@ mod workspace;
 
 pub mod dev;
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use monoio::net::TcpListener;
+use rand::RngCore;
 use std::io;
 
 #[monoio::main(timer_enabled = true)]
 async fn main() -> io::Result<()> {
     load_dotenv();
+    ensure_vultr_credential_encryption_key();
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = format!("0.0.0.0:{port}");
 
@@ -81,6 +84,39 @@ fn load_dotenv() {
             std::env::set_var(key.trim(), value.trim().trim_matches('"'));
         }
     }
+}
+
+fn ensure_vultr_credential_encryption_key() {
+    let existing = std::env::var("VULTR_CREDENTIAL_ENCRYPTION_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    if !existing.is_empty() {
+        return;
+    }
+
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let generated = B64.encode(bytes);
+
+    let existing_env = std::fs::read_to_string(".env").unwrap_or_default();
+    let mut kept_lines = existing_env
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("VULTR_CREDENTIAL_ENCRYPTION_KEY=")
+        })
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    kept_lines.push(format!("VULTR_CREDENTIAL_ENCRYPTION_KEY={generated}"));
+    let mut next_env = kept_lines.join("\n");
+    next_env.push('\n');
+
+    if let Err(error) = std::fs::write(".env", next_env) {
+        eprintln!("warning: could not persist VULTR_CREDENTIAL_ENCRYPTION_KEY to .env: {error}");
+    }
+
+    std::env::set_var("VULTR_CREDENTIAL_ENCRYPTION_KEY", generated);
 }
 
 fn is_benign_io_error(e: &io::Error) -> bool {
